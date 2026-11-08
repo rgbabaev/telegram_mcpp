@@ -1,5 +1,6 @@
 # Project rules
 
+- Follow [SPECIFICATION.md](SPECIFICATION.md) for scope, requirements, and acceptance criteria.
 - Write code in the spirit of Robert C. Martin's Clean Code: clear names, small focused functions, single responsibilities, explicit dependencies, and simple designs.
 - Keep all documentation and communication very concise.
 - Record significant architectural decisions in `docs/adr`. Keep ADRs concise: context, decision, consequences. Supersede existing decisions with a new ADR.
