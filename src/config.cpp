@@ -106,7 +106,7 @@ Config load_config(const std::filesystem::path& path) {
         throw std::runtime_error("Invalid state directory");
     }
     const auto parent = std::filesystem::absolute(path).parent_path();
-    config.state_directory = (parent / state).lexically_normal();
+    config.state_directory = parent / state;
     config.allowed_chat_ids = parse_chat_ids(fields.at("allowed_chat_ids"));
     config.limits.page_size = read_limit(fields, "page_size", 20, Limits::maximum_page_size);
     config.limits.request_timeout = std::chrono::seconds(

@@ -42,14 +42,22 @@ void require_private(int descriptor, mode_t mode, bool directory) {
     }
 }
 
+void create_private_directory(int parent, const std::filesystem::path& name) {
+    if (::mkdirat(parent, name.c_str(), 0700) == 0) {
+        if (::fchmodat(parent, name.c_str(), 0700, AT_SYMLINK_NOFOLLOW) != 0) {
+            throw std::runtime_error("Cannot protect private directory");
+        }
+    } else if (errno != EEXIST) {
+        throw std::runtime_error("Cannot create private directory");
+    }
+}
+
 Descriptor open_directory(const std::filesystem::path& path, bool create) {
-    const auto absolute = std::filesystem::absolute(path).lexically_normal();
+    const auto absolute = std::filesystem::absolute(path);
     Descriptor current(::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     for (const auto& component : absolute.relative_path()) {
         if (component.empty()) continue;
-        if (create && ::mkdirat(current.get(), component.c_str(), 0700) != 0 && errno != EEXIST) {
-            throw std::runtime_error("Cannot create private directory");
-        }
+        if (create) create_private_directory(current.get(), component);
         current = Descriptor(::openat(current.get(), component.c_str(),
                                       O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
     }

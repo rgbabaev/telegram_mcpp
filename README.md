@@ -42,7 +42,7 @@ concurrent_requests=4
 ./build/telegram-mcpp config check ./private/config.local
 ```
 
-`check` validates configuration and creates/checks the private state directory without contacting Telegram. Paths resolve relative to the configuration directory; absolute state paths are supported. Initialization never overwrites files. Existing directories/files must be owned by the current user with exactly `0700`/`0600`; symlinks and hard-linked configuration files are rejected. Newly created directories/files use those permissions. Use a private directory whose ancestors you trust. `/private/`, `/state/`, and `config.local` are ignored by Git; keep custom paths outside the repository.
+`check` validates configuration and creates/checks the private state directory without contacting Telegram. Paths resolve relative to the configuration directory; absolute state paths are supported. Initialization never overwrites files. Existing directories/files must be owned by the current user with exactly `0700`/`0600`; symlinks and hard-linked configuration files are rejected. Newly created directories/files use those permissions regardless of umask. Path components are checked before traversing `..`. Use a private directory whose ancestors you trust. `/private/`, `/state/`, and `config.local` are ignored by Git; keep custom paths outside the repository.
 
 Format: one `key=value` per line; surrounding spaces and blank lines are allowed. No quoting, interpolation, or comments. Four required keys: `api_id`, `api_hash`, `state_directory`, `allowed_chat_ids`. Configuration is limited to 64 KiB. Unknown/duplicate keys and malformed values fail without echoing their values.
 
@@ -61,4 +61,4 @@ cmake --build build-offline
 ctest --test-dir build-offline --output-on-failure
 ```
 
-Tests cover configuration validation/defaults/limits, full-width IDs, empty allowlist, private permissions, symlink/hard-link rejection, special/oversized files, non-overwriting initialization, fixed-event logging, CLI exit codes, and empty stdout. The TDLib-enabled suite also executes a typed synchronous version query without opening a client/session. CI builds both modes on Ubuntu 24.04.
+Tests cover configuration validation/defaults/limits, full-width IDs, empty allowlist, private permissions under restrictive umask, symlink/hard-link rejection including paths containing `..`, special/oversized files, non-overwriting initialization, fixed-event logging, CLI exit codes, and empty stdout. The TDLib-enabled suite also executes a typed synchronous version query without opening a client/session. CI builds both modes on Ubuntu 24.04.

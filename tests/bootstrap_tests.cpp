@@ -40,6 +40,17 @@ public:
     fs::path path;
 };
 
+class ScopedUmask {
+public:
+    explicit ScopedUmask(mode_t mask) : previous_(::umask(mask)) {}
+    ~ScopedUmask() { ::umask(previous_); }
+    ScopedUmask(const ScopedUmask&) = delete;
+    ScopedUmask& operator=(const ScopedUmask&) = delete;
+
+private:
+    mode_t previous_;
+};
+
 std::string valid_config(std::string ids = "") {
     return "api_id=12345\napi_hash=0123456789abcdef0123456789abcdef\n"
            "state_directory=state\nallowed_chat_ids=" + ids + "\n";
@@ -107,6 +118,32 @@ void initialization_is_private_and_exclusive() {
     require_failure([&] { load_config(path); });
 }
 
+void initialization_ignores_restrictive_umask() {
+    Workspace workspace;
+    const auto path = workspace.path / "nested" / "private" / "config";
+    const ScopedUmask mask(0777);
+    initialize_config(path);
+    require(permissions(path) == 0600);
+    require(permissions(path.parent_path()) == 0700);
+    require(permissions(path.parent_path().parent_path()) == 0700);
+    const auto state = workspace.path / "data" / "state";
+    ensure_private_directory(state);
+    require(permissions(state) == 0700);
+    require(permissions(state.parent_path()) == 0700);
+}
+
+void existing_permissions_are_preserved() {
+    Workspace workspace;
+    const auto directory = workspace.path / "existing";
+    fs::create_directory(directory);
+    require(::chmod(directory.c_str(), 0755) == 0);
+    const ScopedUmask mask(0777);
+    require_failure([&] { initialize_config(directory / "config"); });
+    require_failure([&] { ensure_private_directory(directory); });
+    require(permissions(directory) == 0755);
+    require(!fs::exists(directory / "config"));
+}
+
 void reject_unsafe_permissions() {
     Workspace workspace;
     const auto path = workspace.path / "config";
@@ -128,6 +165,44 @@ void reject_links() {
     require_failure([&] { load_config(workspace.path / "directory-link" / "config"); });
     fs::create_hard_link(path, workspace.path / "hard-link");
     require_failure([&] { load_config(path); });
+}
+
+void reject_parent_traversal_through_config_symlink() {
+    Workspace workspace;
+    fs::create_directories(workspace.path / "target" / "nested");
+    fs::create_directory_symlink(workspace.path / "target" / "nested", workspace.path / "link");
+    const auto path = workspace.path / "link" / ".." / "config";
+    require_failure([&] { initialize_config(path); });
+    require(!fs::exists(workspace.path / "config"));
+    require(!fs::exists(workspace.path / "target" / "config"));
+    create_private_file(workspace.path / "config", valid_config());
+    require_failure([&] { load_config(path); });
+}
+
+void reject_parent_traversal_through_state_symlink() {
+    Workspace workspace;
+    fs::create_directories(workspace.path / "target" / "nested");
+    fs::create_directory_symlink(workspace.path / "target" / "nested", workspace.path / "link");
+    for (const auto& state : {fs::path("link/../state"), workspace.path / "link" / ".." / "state"}) {
+        const auto path = workspace.path / "config";
+        create_private_file(path, "api_id=1\napi_hash=0123456789abcdef0123456789abcdef\n"
+            "state_directory=" + state.string() + "\nallowed_chat_ids=\n");
+        const auto config = load_config(path);
+        require_failure([&] { prepare_state_directory(config); });
+        require(!fs::exists(workspace.path / "state"));
+        require(!fs::exists(workspace.path / "target" / "state"));
+        fs::remove(path);
+    }
+}
+
+void real_parent_traversal_is_supported() {
+    Workspace workspace;
+    const auto path = workspace.path / "nested" / ".." / "config";
+    create_private_file(path, valid_config());
+    const auto config = load_config(path);
+    prepare_state_directory(config);
+    require(permissions(workspace.path / "config") == 0600);
+    require(permissions(workspace.path / "state") == 0700);
 }
 
 void reject_unsafe_state() {
@@ -183,8 +258,13 @@ int main() {
         {"empty allowlist", empty_allowlist},
         {"strict configuration", invalid_configuration},
         {"private exclusive initialization", initialization_is_private_and_exclusive},
+        {"restrictive umask", initialization_ignores_restrictive_umask},
+        {"preserve existing permissions", existing_permissions_are_preserved},
         {"unsafe permissions", reject_unsafe_permissions},
         {"symlinks and hard links", reject_links},
+        {"config symlink before parent traversal", reject_parent_traversal_through_config_symlink},
+        {"state symlink before parent traversal", reject_parent_traversal_through_state_symlink},
+        {"real parent traversal", real_parent_traversal_is_supported},
         {"unsafe state directory", reject_unsafe_state},
         {"bounded regular files", bounded_file_and_nonregular_file},
         {"configured limits and absolute state", lower_limits_and_absolute_state},
