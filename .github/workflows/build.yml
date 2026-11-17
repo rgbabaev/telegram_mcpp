@@ -7,14 +7,36 @@ permissions:
 jobs:
   read-operations:
     runs-on: ubuntu-24.04
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: content
     strategy:
       matrix:
         tdlib: ["OFF", "ON"]
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y clang lld cmake ninja-build gperf libssl-dev zlib1g-dev qrencode python3
+      - run: sudo apt-get update && sudo apt-get install -y ccache clang lld cmake ninja-build gperf libssl-dev zlib1g-dev qrencode python3
+      - name: Identify compiler
+        id: compiler
+        run: |
+          fingerprint=$(clang++ --version | sha256sum | cut -d ' ' -f 1)
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+      - name: Cache compiler outputs
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-v1-ubuntu-24.04-${{ runner.arch }}-${{ matrix.tdlib }}-${{ steps.compiler.outputs.fingerprint }}-${{ hashFiles('.github/workflows/build.yml', 'CMakeLists.txt', 'cmake/**') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-v1-ubuntu-24.04-${{ runner.arch }}-${{ matrix.tdlib }}-${{ steps.compiler.outputs.fingerprint }}-${{ hashFiles('.github/workflows/build.yml', 'CMakeLists.txt', 'cmake/**') }}-
+      - run: ccache --zero-stats
       - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -DTELEGRAM_MCPP_WITH_TDLIB=${{ matrix.tdlib }}
         env:
           CC: clang
           CXX: clang++
+          CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.tdlib == 'OFF' && 'ccache' || '' }}
       - run: cmake --build build --target check -j2
+      - name: Compiler cache statistics
+        if: ${{ always() && steps.cache.outcome == 'success' }}
+        run: ccache --show-stats
