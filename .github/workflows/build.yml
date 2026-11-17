@@ -1,0 +1,21 @@
+name: Build
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        tdlib: ["OFF", "ON"]
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y clang lld cmake ninja-build gperf libssl-dev zlib1g-dev
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -DTELEGRAM_MCPP_WITH_TDLIB=${{ matrix.tdlib }}
+        env:
+          CC: clang
+          CXX: clang++
+      - run: cmake --build build --target telegram-mcpp bootstrap_tests -j2
+      - run: ctest --test-dir build --output-on-failure

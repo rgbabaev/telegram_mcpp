@@ -66,3 +66,10 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+# Private configuration and TDLib state
+/private/
+/state/
+config.local
+.env
+.env.*
