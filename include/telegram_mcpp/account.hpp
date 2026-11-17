@@ -2,6 +2,7 @@
 
 #include "telegram_mcpp/config.hpp"
 #include "telegram_mcpp/logger.hpp"
+#include "telegram_mcpp/read_model.hpp"
 
 #include <chrono>
 #include <condition_variable>
@@ -21,7 +22,8 @@
 namespace telegram_mcpp {
 
 enum class AccountErrorCode { invalid_input, unauthenticated, revoked, rate_limited, timeout,
-                              cancelled, overloaded, unavailable, rejected, qr_unavailable, unsupported };
+                              cancelled, overloaded, unavailable, rejected, qr_unavailable, unsupported,
+                              message_unavailable, history_unavailable };
 
 class AccountError : public std::runtime_error {
 public:
@@ -43,13 +45,14 @@ struct AuthorizationUpdate {
 };
 
 enum class AccountCommand { parameters, qr, phone, email, email_code, code, password,
-                            logout, close, load_chats, chat_ids, chat };
+                            logout, close, load_chats, chat_ids, chat, search_messages, message, message_link };
 struct AccountRequest {
     AccountCommand command;
     std::string secret;
     std::int64_t chat_id = 0;
     int limit = 20;
     bool archive = false;
+    std::int64_t message_id = 0;
 };
 struct ChatSummary {
     std::int64_t id = 0;
@@ -63,6 +66,10 @@ struct AccountResult {
     bool exhausted = false;
     std::vector<std::int64_t> chat_ids;
     std::optional<ChatSummary> chat;
+    std::vector<MessageRecord> messages;
+    std::optional<MessageRecord> message;
+    std::int64_t next_from_message_id = 0;
+    std::optional<std::string> link;
 };
 struct AccountEvent {
     std::uint64_t request_id = 0;

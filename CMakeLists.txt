@@ -12,16 +12,21 @@ endif()
 option(TELEGRAM_MCPP_WITH_TDLIB "Build the pinned TDLib typed API adapter" ON)
 include(CTest)
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 add_library(telegram_mcpp_core
     src/config.cpp
     src/private_storage.cpp
     src/logger.cpp
+    src/text.cpp
+    src/cursor.cpp
+    src/read_json.cpp
+    src/read_operations.cpp
     src/account.cpp
     src/operator_terminal.cpp
 )
 target_include_directories(telegram_mcpp_core PUBLIC include)
-target_link_libraries(telegram_mcpp_core PRIVATE Threads::Threads)
+target_link_libraries(telegram_mcpp_core PRIVATE Threads::Threads OpenSSL::Crypto)
 target_compile_options(telegram_mcpp_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_executable(telegram-mcpp src/main.cpp)
@@ -30,8 +35,10 @@ target_compile_options(telegram-mcpp PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 if(TELEGRAM_MCPP_WITH_TDLIB)
     include(cmake/TDLib.cmake)
-    add_library(telegram_mcpp_tdlib src/tdlib.cpp)
+    add_library(telegram_mcpp_tdlib src/tdlib.cpp src/tdlib_read.cpp)
     target_include_directories(telegram_mcpp_tdlib PUBLIC include)
+    target_include_directories(telegram_mcpp_tdlib SYSTEM PRIVATE $<TARGET_PROPERTY:Td::TdStatic,INTERFACE_INCLUDE_DIRECTORIES>)
+    target_compile_options(telegram_mcpp_tdlib PRIVATE -Wall -Wextra -Wpedantic -Werror)
     target_link_libraries(telegram_mcpp_tdlib PRIVATE Td::TdStatic telegram_mcpp_core)
     target_link_libraries(telegram-mcpp PRIVATE telegram_mcpp_tdlib)
     target_compile_definitions(telegram-mcpp PRIVATE TELEGRAM_MCPP_WITH_TDLIB)
@@ -42,6 +49,13 @@ if(BUILD_TESTING)
     target_link_libraries(bootstrap_tests PRIVATE telegram_mcpp_core)
     target_compile_options(bootstrap_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME bootstrap COMMAND bootstrap_tests)
+    add_executable(read_tests tests/read_tests.cpp)
+    target_link_libraries(read_tests PRIVATE telegram_mcpp_core)
+    target_compile_options(read_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_test(NAME read_operations COMMAND read_tests)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_test(NAME read_json COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/read_json.py $<TARGET_FILE:read_tests>)
+    set_tests_properties(read_operations PROPERTIES TIMEOUT 30)
     add_executable(account_tests tests/account_tests.cpp)
     target_link_libraries(account_tests PRIVATE telegram_mcpp_core)
     target_compile_options(account_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -61,10 +75,16 @@ if(BUILD_TESTING)
         -DPROGRAM=$<TARGET_FILE:telegram-mcpp> -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli.cmake)
     add_custom_target(check
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS telegram-mcpp bootstrap_tests account_tests operator_tests
+        DEPENDS telegram-mcpp bootstrap_tests account_tests operator_tests read_tests
         USES_TERMINAL
     )
     if(TELEGRAM_MCPP_WITH_TDLIB)
+        add_executable(tdlib_read_tests tests/tdlib_read_tests.cpp)
+        target_link_libraries(tdlib_read_tests PRIVATE telegram_mcpp_tdlib telegram_mcpp_core Td::TdStatic)
+        target_include_directories(tdlib_read_tests SYSTEM PRIVATE $<TARGET_PROPERTY:Td::TdStatic,INTERFACE_INCLUDE_DIRECTORIES>)
+        target_compile_options(tdlib_read_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        add_test(NAME tdlib_read_mapping COMMAND tdlib_read_tests)
+        add_dependencies(check tdlib_read_tests)
         add_executable(tdlib_account_tests tests/tdlib_account_tests.cpp)
         target_link_libraries(tdlib_account_tests PRIVATE telegram_mcpp_tdlib telegram_mcpp_core)
         add_dependencies(check tdlib_account_tests)

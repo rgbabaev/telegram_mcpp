@@ -9,7 +9,7 @@ namespace telegram_mcpp {
 
 enum class Event {
     config_created, config_validated, command_failed, authorization_changed,
-    telegram_unavailable, connection_changed, shutdown_failed
+    telegram_unavailable, connection_changed, shutdown_failed, request_failed
 };
 
 class Logger {

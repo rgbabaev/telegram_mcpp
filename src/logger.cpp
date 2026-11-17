@@ -14,6 +14,7 @@ std::string_view event_name(Event event) {
     case Event::telegram_unavailable: return "error telegram_unavailable";
     case Event::connection_changed: return "info connection_changed";
     case Event::shutdown_failed: return "error shutdown_failed";
+    case Event::request_failed: return "error request_failed";
     case Event::command_failed: return "error command_failed";
     }
     return "error unknown_event";
