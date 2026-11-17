@@ -17,6 +17,8 @@ add_library(telegram_mcpp_core
     src/config.cpp
     src/private_storage.cpp
     src/logger.cpp
+    src/account.cpp
+    src/operator_terminal.cpp
 )
 target_include_directories(telegram_mcpp_core PUBLIC include)
 target_link_libraries(telegram_mcpp_core PRIVATE Threads::Threads)
@@ -30,7 +32,7 @@ if(TELEGRAM_MCPP_WITH_TDLIB)
     include(cmake/TDLib.cmake)
     add_library(telegram_mcpp_tdlib src/tdlib.cpp)
     target_include_directories(telegram_mcpp_tdlib PUBLIC include)
-    target_link_libraries(telegram_mcpp_tdlib PRIVATE Td::TdStatic)
+    target_link_libraries(telegram_mcpp_tdlib PRIVATE Td::TdStatic telegram_mcpp_core)
     target_link_libraries(telegram-mcpp PRIVATE telegram_mcpp_tdlib)
     target_compile_definitions(telegram-mcpp PRIVATE TELEGRAM_MCPP_WITH_TDLIB)
 endif()
@@ -40,9 +42,36 @@ if(BUILD_TESTING)
     target_link_libraries(bootstrap_tests PRIVATE telegram_mcpp_core)
     target_compile_options(bootstrap_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME bootstrap COMMAND bootstrap_tests)
+    add_executable(account_tests tests/account_tests.cpp)
+    target_link_libraries(account_tests PRIVATE telegram_mcpp_core)
+    target_compile_options(account_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    add_executable(operator_tests tests/operator_tests.cpp)
+    target_link_libraries(operator_tests PRIVATE telegram_mcpp_core)
+    target_compile_options(operator_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    find_program(TELEGRAM_MCPP_QRENCODE qrencode)
+    if(TELEGRAM_MCPP_QRENCODE)
+        add_test(NAME operator_qr COMMAND operator_tests --qr)
+        set_tests_properties(operator_qr PROPERTIES TIMEOUT 15)
+    endif()
+    add_test(NAME operator_terminal COMMAND operator_tests)
+    set_tests_properties(operator_terminal PROPERTIES TIMEOUT 25)
+    add_test(NAME account COMMAND account_tests)
+    set_tests_properties(account PROPERTIES TIMEOUT 20)
     add_test(NAME cli COMMAND ${CMAKE_COMMAND}
         -DPROGRAM=$<TARGET_FILE:telegram-mcpp> -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli.cmake)
+    add_custom_target(check
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+        DEPENDS telegram-mcpp bootstrap_tests account_tests operator_tests
+        USES_TERMINAL
+    )
     if(TELEGRAM_MCPP_WITH_TDLIB)
+        add_executable(tdlib_account_tests tests/tdlib_account_tests.cpp)
+        target_link_libraries(tdlib_account_tests PRIVATE telegram_mcpp_tdlib telegram_mcpp_core)
+        add_dependencies(check tdlib_account_tests)
+        add_test(NAME tdlib_account COMMAND tdlib_account_tests)
+        add_test(NAME operator_lifecycle COMMAND operator_tests $<TARGET_FILE:telegram-mcpp>)
+        set_tests_properties(operator_lifecycle PROPERTIES TIMEOUT 35)
+        set_tests_properties(tdlib_account PROPERTIES TIMEOUT 30)
         add_test(NAME tdlib_typed_api COMMAND telegram-mcpp --version)
         set_tests_properties(tdlib_typed_api PROPERTIES PASS_REGULAR_EXPRESSION "TDLib [0-9]+\\.[0-9]+")
     endif()

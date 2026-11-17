@@ -1,8 +1,17 @@
 #include "telegram_mcpp/tdlib.hpp"
+#include "telegram_mcpp/private_storage.hpp"
 
 #include <td/telegram/Client.h>
 #include <td/telegram/td_api.h>
+
+#include <algorithm>
+#include <charconv>
+#include <limits>
+#include <optional>
+#include <set>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 
 namespace telegram_mcpp {
 
@@ -15,6 +24,179 @@ std::string tdlib_version() {
         throw std::runtime_error("Cannot determine TDLib version");
     }
     return static_cast<const td::td_api::optionValueString&>(*result).value_;
+}
+
+namespace {
+
+namespace api = td::td_api;
+
+AccountErrorCode classify_error(const api::error& error) {
+    if (error.code_ == 429) return AccountErrorCode::rate_limited;
+    if (error.code_ == 401) return AccountErrorCode::unauthenticated;
+    if (error.code_ == 400) return AccountErrorCode::rejected;
+    if (error.code_ == 408) return AccountErrorCode::timeout;
+    return AccountErrorCode::unavailable;
+}
+
+int retry_delay(const api::error& error) {
+    constexpr std::string_view prefix = "Too Many Requests: retry after ";
+    const std::string_view message(error.message_);
+    if (error.code_ != 429 || message.substr(0, prefix.size()) != prefix) return 0;
+    int seconds = 0;
+    const auto value = message.substr(prefix.size());
+    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), seconds);
+    return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() && seconds > 0 ? seconds : 0;
+}
+
+AuthorizationUpdate authorization(const api::AuthorizationState& state) {
+    AuthorizationUpdate update;
+    switch (state.get_id()) {
+    case api::authorizationStateWaitTdlibParameters::ID: update.state = Authorization::parameters; break;
+    case api::authorizationStateWaitPhoneNumber::ID: update.state = Authorization::phone; break;
+    case api::authorizationStateWaitOtherDeviceConfirmation::ID:
+        update.state = Authorization::qr;
+        update.qr_link = static_cast<const api::authorizationStateWaitOtherDeviceConfirmation&>(state).link_;
+        break;
+    case api::authorizationStateWaitEmailAddress::ID: update.state = Authorization::email; break;
+    case api::authorizationStateWaitEmailCode::ID: update.state = Authorization::email_code; break;
+    case api::authorizationStateWaitCode::ID: update.state = Authorization::code; break;
+    case api::authorizationStateWaitPassword::ID: update.state = Authorization::password; break;
+    case api::authorizationStateWaitRegistration::ID: update.state = Authorization::registration; break;
+    case api::authorizationStateReady::ID: update.state = Authorization::ready; break;
+    case api::authorizationStateLoggingOut::ID: update.state = Authorization::logging_out; break;
+    case api::authorizationStateClosing::ID: update.state = Authorization::closing; break;
+    case api::authorizationStateClosed::ID: update.state = Authorization::closed; break;
+    default: update.state = Authorization::unsupported; break;
+    }
+    return update;
+}
+
+std::string chat_type(const api::ChatType& type) {
+    switch (type.get_id()) {
+    case api::chatTypePrivate::ID: return "private";
+    case api::chatTypeBasicGroup::ID: return "basic_group";
+    case api::chatTypeSupergroup::ID:
+        return static_cast<const api::chatTypeSupergroup&>(type).is_channel_ ? "channel" : "supergroup";
+    case api::chatTypeSecret::ID: return "secret";
+    default: return "unsupported";
+    }
+}
+
+class TdlibTransport final : public AccountTransport {
+public:
+    TdlibTransport(const Config& config, Logger& logger)
+        : config_(config), logger_(logger),
+          database_key_(read_private_file(config.state_directory / ".database.key")) {
+        tdlib_version();
+        manager_ = std::make_unique<td::ClientManager>();
+        client_id_ = manager_->create_client_id();
+        manager_->send(client_id_, std::numeric_limits<std::uint64_t>::max(), api::make_object<api::getOption>("version"));
+    }
+
+    void send(std::uint64_t id, AccountRequest request) override {
+        if (request.command == AccountCommand::load_chats) loading_requests_.insert(id);
+        manager_->send(client_id_, id, function(std::move(request)));
+    }
+
+    std::optional<AccountEvent> receive(std::chrono::milliseconds timeout) override {
+        auto response = manager_->receive(static_cast<double>(timeout.count()) / 1000.0);
+        if (!response.object) return {};
+        AccountEvent event;
+        event.request_id = response.request_id;
+        const auto& object = *response.object;
+        if (response.request_id == std::numeric_limits<std::uint64_t>::max()) {
+            if (object.get_id() == api::error::ID) throw AccountError(AccountErrorCode::unavailable);
+            event.request_id = 0;
+        } else if (object.get_id() == api::updateAuthorizationState::ID) {
+            const auto& state = static_cast<const api::updateAuthorizationState&>(object).authorization_state_;
+            if (state) event.authorization = authorization(*state);
+        } else if (object.get_id() == api::updateConnectionState::ID) {
+            logger_.write(Event::connection_changed);
+        } else if (response.request_id != 0) {
+            event.result = result(object, loading_requests_.erase(response.request_id) != 0);
+        }
+        return event;
+    }
+
+private:
+    api::object_ptr<api::Function> function(AccountRequest request) {
+        switch (request.command) {
+        case AccountCommand::parameters: return parameters();
+        case AccountCommand::qr: return api::make_object<api::requestQrCodeAuthentication>(std::vector<std::int64_t>{});
+        case AccountCommand::phone: return api::make_object<api::setAuthenticationPhoneNumber>(request.secret, nullptr);
+        case AccountCommand::email: return api::make_object<api::setAuthenticationEmailAddress>(request.secret);
+        case AccountCommand::email_code:
+            return api::make_object<api::checkAuthenticationEmailCode>(api::make_object<api::emailAddressAuthenticationCode>(request.secret));
+        case AccountCommand::code: return api::make_object<api::checkAuthenticationCode>(request.secret);
+        case AccountCommand::password: return api::make_object<api::checkAuthenticationPassword>(request.secret);
+        case AccountCommand::logout: return api::make_object<api::logOut>();
+        case AccountCommand::close: return api::make_object<api::close>();
+        case AccountCommand::load_chats: return api::make_object<api::loadChats>(chat_list(request.archive), request.limit);
+        case AccountCommand::chat_ids: return api::make_object<api::getChats>(chat_list(request.archive), request.limit);
+        case AccountCommand::chat: return api::make_object<api::getChat>(request.chat_id);
+        }
+        throw AccountError(AccountErrorCode::invalid_input);
+    }
+
+    api::object_ptr<api::Function> parameters() {
+        auto parameters = api::make_object<api::setTdlibParameters>();
+        parameters->database_directory_ = (config_.state_directory / "database").string();
+        parameters->files_directory_ = (config_.state_directory / "files").string();
+        parameters->database_encryption_key_ = database_key_;
+        parameters->use_chat_info_database_ = true;
+        parameters->use_message_database_ = true;
+        parameters->use_secret_chats_ = false;
+        parameters->api_id_ = config_.api_id;
+        parameters->api_hash_ = config_.api_hash;
+        parameters->system_language_code_ = "en";
+        parameters->device_model_ = "telegram-mcpp";
+        parameters->application_version_ = "0.1.0";
+        return parameters;
+    }
+
+    static api::object_ptr<api::ChatList> chat_list(bool archive) {
+        if (archive) return api::make_object<api::chatListArchive>();
+        return api::make_object<api::chatListMain>();
+    }
+
+    static AccountResult result(const api::Object& object, bool loading) {
+        AccountResult result;
+        switch (object.get_id()) {
+        case api::ok::ID: break;
+        case api::error::ID: {
+            const auto& error = static_cast<const api::error&>(object);
+            if (loading && error.code_ == 404) result.exhausted = true;
+            else { result.error = classify_error(error); result.retry_after = retry_delay(error); }
+            break;
+        }
+        case api::chats::ID: result.chat_ids = static_cast<const api::chats&>(object).chat_ids_; break;
+        case api::chat::ID: {
+            const auto& chat = static_cast<const api::chat&>(object);
+            std::size_t end = std::min(chat.title_.size(), std::size_t{512});
+            if (end < chat.title_.size()) {
+                while (end > 0 && (static_cast<unsigned char>(chat.title_[end]) & 0xc0) == 0x80) --end;
+            }
+            result.chat = ChatSummary{chat.id_, chat.title_.substr(0, end),
+                                     chat.type_ ? chat_type(*chat.type_) : "unsupported", chat.title_.size() > 512};
+            break;
+        }
+        default: result.error = AccountErrorCode::unavailable; break;
+        }
+        return result;
+    }
+
+    Config config_;
+    Logger& logger_;
+    std::string database_key_;
+    std::unique_ptr<td::ClientManager> manager_;
+    td::ClientManager::ClientId client_id_;
+    std::set<std::uint64_t> loading_requests_;
+};
+
+}
+
+std::unique_ptr<AccountTransport> make_tdlib_transport(const Config& config, Logger& logger) {
+    return std::make_unique<TdlibTransport>(config, logger);
 }
 
 }

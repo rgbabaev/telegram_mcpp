@@ -1,6 +1,6 @@
 # telegram_mcpp
 
-Read-only Telegram MCP server under development. **Step 1 (bootstrap)** provides CMake, pinned TDLib, private configuration, stderr event logging, and offline tests. Login, session locking, Telegram operations, and MCP are subsequent steps in [the specification](docs/SPECIFICATION.md).
+Read-only Telegram MCP server under development. **Steps 1–2** provide CMake, pinned TDLib, private configuration, account login/recovery, exclusive session ownership, operator chat discovery, and offline tests. Read operations and MCP are subsequent steps in [the specification](docs/SPECIFICATION.md).
 
 ## Build
 
@@ -8,11 +8,10 @@ Linux; reference environment: Ubuntu 24.04, Clang 18, CMake 3.28. C++17 and CMak
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y clang lld cmake ninja-build gperf libssl-dev zlib1g-dev ca-certificates
+sudo apt-get install -y clang lld cmake ninja-build gperf libssl-dev zlib1g-dev ca-certificates qrencode
 CC=clang CXX=clang++ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld
-cmake --build build --target telegram-mcpp bootstrap_tests -j1
-ctest --test-dir build --output-on-failure
+cmake --build build --target check -j1
 ./build/telegram-mcpp --version
 ```
 
@@ -48,7 +47,32 @@ Format: one `key=value` per line; surrounding spaces and blank lines are allowed
 
 Chat IDs are comma-separated signed decimal 64-bit integers, with no duplicates or zero. An empty allowlist grants no access. Configured page size is 1–100 (default 20), timeout is 1–30 seconds (default 30), concurrency is 1–4 (default 4). Response/text budgets are fixed at 256 KiB/8 KiB. These settings establish the configuration contract; Telegram request enforcement arrives with read operations.
 
-All bootstrap diagnostics, including help/version, go to stderr; stdout stays empty for future MCP traffic. Logs accept fixed event identifiers, never configuration values or message text. Exit codes: 0 success, 1 operational/configuration error, 2 invalid command. No logs are persisted.
+All operator output and diagnostics, including help/version, go to stderr; stdout stays empty for future MCP traffic. Logs accept fixed event identifiers, never configuration values or message text. Exit codes: 0 success, 1 operational/configuration error, 2 invalid command. No logs are persisted.
+
+## Account access
+
+```sh
+./build/telegram-mcpp auth login ./private/config.local
+./build/telegram-mcpp auth login ./private/config.local --phone
+./build/telegram-mcpp auth status ./private/config.local
+./build/telegram-mcpp chats list ./private/config.local --limit 20
+./build/telegram-mcpp chats list ./private/config.local --archive --offset 20 --limit 20
+./build/telegram-mcpp auth logout ./private/config.local
+```
+
+Login defaults to a terminal QR code scanned from Telegram **Settings > Devices > Link Desktop Device**. QR codes refresh when TDLib supplies a new token. Install `qrencode`, or use `--phone` for phone/code login. TDLib can additionally request email/email-code and 2FA steps. All authentication input is hidden and read from `/dev/tty`; QR tokens are sent to the renderer through stdin and displayed only on that terminal. Ctrl-C cancels login. Registration, premium purchases, password recovery, and other unsupported authorization steps require an official Telegram app.
+
+`status` never prompts. It reports saved authorization observed by TDLib; it does not prove server connectivity. Previously authorized state that becomes unauthorized is reported as revoked. Network errors, timeouts, and cancellation do not trigger an application logout. Known rate-limit delays are reported; the application does not retry authentication automatically. Only `auth logout` requests logout and destroys TDLib session data; it requires connectivity. A submitted logout may finish after interruption; check status afterward.
+
+Each account command locks the configured state root before opening TDLib. A competing process fails immediately. The lock stays until TDLib closes and is never deleted. New TDLib directories/files inherit `0700`/`0600`. Existing state is checked for unsafe modes, owners, links, and special files. SIGINT/SIGTERM cancels operator work and closes TDLib before releasing ownership (exit 130/143). Keep the state root's ancestors trusted.
+
+State layout: `.session.lock`, `.database.key` (random, private database encryption key), `.authorized` (successful-login marker), `database/`, and `files/`. Back up the entire directory with its permissions. Losing the key prevents session recovery; a missing key over existing database data is an error, never an automatic reset. No media is downloaded; secret chats are disabled.
+
+Chat discovery deliberately includes chats outside the MCP allowlist so the operator can configure it. Output is ID, type, and quoted title; controls and non-ASCII UTF-8 bytes are hex-escaped to protect the terminal, and clipped titles are marked. Choose main or archive, limit 1–100 (configuration default), and offset 0–9900. Results follow TDLib's current chat-list order; offsets are not snapshots. A stalled load is marked partial and returns exit 1; an exhausted list is explicit. Discovery is bounded by the request timeout. These are operator commands, not the later MCP `list_chats` tool.
+
+## Account smoke test
+
+With your own credentials, run QR login, verify `status`, restart and verify `status` again, then list main/archive chats. For an account with 2FA, verify the password step; test `--phone` when supported by Telegram. Cancel login with Ctrl-C and confirm a subsequent command can acquire the session. Test logout only when you intend to revoke this saved session. Live account authentication cannot be proven with dummy offline credentials.
 
 ## Offline tests
 
@@ -57,8 +81,7 @@ With the compiler/CMake installed, this path needs neither network, TDLib, nor T
 ```sh
 CC=clang CXX=clang++ cmake -S . -B build-offline -G Ninja \
   -DTELEGRAM_MCPP_WITH_TDLIB=OFF -DCMAKE_BUILD_TYPE=Debug
-cmake --build build-offline
-ctest --test-dir build-offline --output-on-failure
+cmake --build build-offline --target check -j1
 ```
 
-Tests cover configuration validation/defaults/limits, full-width IDs, empty allowlist, private permissions under restrictive umask, symlink/hard-link rejection including paths containing `..`, special/oversized files, non-overwriting initialization, fixed-event logging, CLI exit codes, and empty stdout. The TDLib-enabled suite also executes a typed synchronous version query without opening a client/session. CI builds both modes on Ubuntu 24.04.
+Tests cover configuration validation, full-width IDs, private storage/ownership, restrictive umask, symlink/hard-link rejection including paths containing `..`, authentication and QR refresh, phone/email/code/2FA steps, revocation/recovery, safe failures, bounded correlation, cancellation/timeout/overload, chat discovery, explicit logout, hidden terminal input, and terminal restoration. TDLib-enabled checks also initialize/close/reopen anonymous state and exercise SIGTERM during a real CLI login prompt. Tests use dummy credentials without completing authentication. CI builds both modes on Ubuntu 24.04.
