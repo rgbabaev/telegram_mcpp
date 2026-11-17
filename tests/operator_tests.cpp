@@ -189,7 +189,7 @@ void lifecycle(const char* program) {
             const int err = ::open(competing_errors.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
             ::dup2(out, STDOUT_FILENO);
             ::dup2(err, STDERR_FILENO);
-            ::execl(program, program, "auth", "status", config.c_str(), nullptr);
+            ::execl(program, program, "mcp", "serve", config.c_str(), nullptr);
             ::_exit(127);
         }
         const auto competing_status = wait_child(competing);
@@ -210,7 +210,7 @@ void lifecycle(const char* program) {
             const int err = ::open(errors.c_str(), O_WRONLY | O_TRUNC);
             ::dup2(out, STDOUT_FILENO);
             ::dup2(err, STDERR_FILENO);
-            ::execl(program, program, "auth", "status", config.c_str(), nullptr);
+            ::execl(program, program, "mcp", "serve", config.c_str(), nullptr);
             ::_exit(127);
         }
         const auto reopened_status = wait_child(reopened);

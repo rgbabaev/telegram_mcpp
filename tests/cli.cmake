@@ -61,3 +61,7 @@ reject_arguments(chats list "${config}" --offset -1)
 reject_arguments(chats list "${config}" --offset 9901)
 reject_arguments(chats list "${config}" --archive --archive)
 reject_arguments(config init "${config}" --phone)
+
+reject_arguments(mcp serve "${config}" --phone)
+reject_arguments(mcp serve "${config}" --limit 1)
+reject_arguments(mcp start "${config}")

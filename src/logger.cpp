@@ -15,6 +15,9 @@ std::string_view event_name(Event event) {
     case Event::connection_changed: return "info connection_changed";
     case Event::shutdown_failed: return "error shutdown_failed";
     case Event::request_failed: return "error request_failed";
+    case Event::mcp_initialized: return "info mcp_initialized";
+    case Event::mcp_stopped: return "info mcp_stopped";
+    case Event::mcp_protocol_error: return "error mcp_protocol_error";
     case Event::command_failed: return "error command_failed";
     }
     return "error unknown_event";

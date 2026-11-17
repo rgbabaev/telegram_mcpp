@@ -64,6 +64,8 @@ vcpkg_installed/
 *.dwo
 
 # test output & cache
+__pycache__/
+*.pyc
 Testing/
 .cache/
 
