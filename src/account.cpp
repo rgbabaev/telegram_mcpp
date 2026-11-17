@@ -18,6 +18,8 @@ const char* error_message(AccountErrorCode code) {
     case AccountErrorCode::unavailable: return "Telegram service unavailable";
     case AccountErrorCode::rejected: return "Telegram rejected the request";
     case AccountErrorCode::qr_unavailable: return "QR login was rejected; rerun auth login with --phone";
+    case AccountErrorCode::message_unavailable: return "Message is unavailable";
+    case AccountErrorCode::history_unavailable: return "Chat history is unavailable";
     case AccountErrorCode::unsupported: return "This authorization step requires an official Telegram app";
     }
     return "Account operation failed";
@@ -134,6 +136,7 @@ void AccountDispatcher::accept(AccountEvent event) {
     if (entry->second->request.command == AccountCommand::logout && event.result.error) logout_requested_ = false;
     logger_.request_completed(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - entry->second->started), pending_.size() - 1);
+    if (event.result.error) logger_.write(Event::request_failed);
     entry->second->promise.set_value(std::move(event.result));
     pending_.erase(entry);
 }

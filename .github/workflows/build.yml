@@ -1,20 +1,80 @@
 name: Build
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
-  account-access:
+  read-operations:
     runs-on: ubuntu-24.04
+    env:
+      CC: clang
+      CXX: clang++
+      BUILD_TYPE: Release
+      BUILD_LINKER_FLAGS: -fuse-ld=lld
+      CTEST_PARALLEL_LEVEL: "4"
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ccache
+      CCACHE_MAXSIZE: 2G
+      CCACHE_COMPILERCHECK: content
     strategy:
       matrix:
         tdlib: ["OFF", "ON"]
     steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y clang lld cmake ninja-build gperf libssl-dev zlib1g-dev qrencode
-      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld -DTELEGRAM_MCPP_WITH_TDLIB=${{ matrix.tdlib }}
+      - uses: actions/checkout@v7
+      - name: Install missing dependencies
         env:
-          CC: clang
-          CXX: clang++
-      - run: cmake --build build --target check -j2
+          WITH_TDLIB: ${{ matrix.tdlib }}
+        run: |
+          echo /usr/lib/llvm-18/bin >> "$GITHUB_PATH"
+          packages=()
+          for tool in ccache qrencode; do
+            command -v "$tool" >/dev/null || packages+=("$tool")
+          done
+          if ! command -v ld.lld >/dev/null && [[ ! -x /usr/lib/llvm-18/bin/ld.lld ]]; then
+            packages+=(lld)
+          fi
+          if [[ "$WITH_TDLIB" == ON ]] && ! command -v gperf >/dev/null; then
+            packages+=(gperf)
+          fi
+          for package in libssl-dev zlib1g-dev; do
+            status=$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)
+            if [[ "$status" != "install ok installed" ]]; then
+              packages+=("$package")
+            fi
+          done
+          if ((${#packages[@]})); then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends "${packages[@]}"
+          fi
+      - name: Identify compiler and build configuration
+        id: compiler
+        run: |
+          fingerprint=$("$CXX" --version | sha256sum | cut -d ' ' -f 1)
+          configuration=$(printf '%s\n' "$BUILD_TYPE" "$BUILD_LINKER_FLAGS" | sha256sum | cut -d ' ' -f 1)
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          echo "configuration=$configuration" >> "$GITHUB_OUTPUT"
+      - name: Cache compiler outputs
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-v2-ubuntu-24.04-${{ runner.arch }}-${{ matrix.tdlib }}-${{ steps.compiler.outputs.fingerprint }}-${{ hashFiles('cmake/TDLib.cmake') }}-${{ steps.compiler.outputs.configuration }}-${{ github.sha }}
+          restore-keys: |
+            ccache-v2-ubuntu-24.04-${{ runner.arch }}-${{ matrix.tdlib }}-${{ steps.compiler.outputs.fingerprint }}-${{ hashFiles('cmake/TDLib.cmake') }}-${{ steps.compiler.outputs.configuration }}-
+            ccache-v1-ubuntu-24.04-${{ runner.arch }}-${{ matrix.tdlib }}-${{ steps.compiler.outputs.fingerprint }}-
+      - run: ccache --zero-stats
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DCMAKE_EXE_LINKER_FLAGS="$BUILD_LINKER_FLAGS" -DTELEGRAM_MCPP_WITH_TDLIB=${{ matrix.tdlib }}
+        env:
+          CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.tdlib == 'OFF' && 'ccache' || '' }}
+      - name: Build and measure resources
+        run: python3 .github/scripts/measure_build.py cmake --build build --target check --parallel 4
+      - name: Compiler cache statistics
+        if: ${{ always() && steps.cache.outcome == 'success' }}
+        run: ccache --show-stats

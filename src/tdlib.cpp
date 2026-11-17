@@ -1,16 +1,15 @@
 #include "telegram_mcpp/tdlib.hpp"
 #include "telegram_mcpp/private_storage.hpp"
+#include "telegram_mcpp/tdlib_read.hpp"
+#include "telegram_mcpp/text.hpp"
 
 #include <td/telegram/Client.h>
 #include <td/telegram/td_api.h>
 
-#include <algorithm>
-#include <charconv>
 #include <limits>
+#include <map>
 #include <optional>
-#include <set>
 #include <stdexcept>
-#include <string_view>
 #include <utility>
 
 namespace telegram_mcpp {
@@ -29,24 +28,6 @@ std::string tdlib_version() {
 namespace {
 
 namespace api = td::td_api;
-
-AccountErrorCode classify_error(const api::error& error) {
-    if (error.code_ == 429) return AccountErrorCode::rate_limited;
-    if (error.code_ == 401) return AccountErrorCode::unauthenticated;
-    if (error.code_ == 400) return AccountErrorCode::rejected;
-    if (error.code_ == 408) return AccountErrorCode::timeout;
-    return AccountErrorCode::unavailable;
-}
-
-int retry_delay(const api::error& error) {
-    constexpr std::string_view prefix = "Too Many Requests: retry after ";
-    const std::string_view message(error.message_);
-    if (error.code_ != 429 || message.substr(0, prefix.size()) != prefix) return 0;
-    int seconds = 0;
-    const auto value = message.substr(prefix.size());
-    const auto parsed = std::from_chars(value.data(), value.data() + value.size(), seconds);
-    return parsed.ec == std::errc{} && parsed.ptr == value.data() + value.size() && seconds > 0 ? seconds : 0;
-}
 
 AuthorizationUpdate authorization(const api::AuthorizationState& state) {
     AuthorizationUpdate update;
@@ -94,7 +75,7 @@ public:
     }
 
     void send(std::uint64_t id, AccountRequest request) override {
-        if (request.command == AccountCommand::load_chats) loading_requests_.insert(id);
+        requests_.emplace(id, request.command);
         manager_->send(client_id_, id, function(std::move(request)));
     }
 
@@ -113,7 +94,10 @@ public:
         } else if (object.get_id() == api::updateConnectionState::ID) {
             logger_.write(Event::connection_changed);
         } else if (response.request_id != 0) {
-            event.result = result(object, loading_requests_.erase(response.request_id) != 0);
+            const auto request = requests_.find(response.request_id);
+            if (request == requests_.end()) return {};
+            event.result = result(object, request->second);
+            requests_.erase(request);
         }
         return event;
     }
@@ -134,6 +118,9 @@ private:
         case AccountCommand::load_chats: return api::make_object<api::loadChats>(chat_list(request.archive), request.limit);
         case AccountCommand::chat_ids: return api::make_object<api::getChats>(chat_list(request.archive), request.limit);
         case AccountCommand::chat: return api::make_object<api::getChat>(request.chat_id);
+        case AccountCommand::search_messages:
+        case AccountCommand::message:
+        case AccountCommand::message_link: return make_tdlib_read_function(request);
         }
         throw AccountError(AccountErrorCode::invalid_input);
     }
@@ -159,28 +146,29 @@ private:
         return api::make_object<api::chatListMain>();
     }
 
-    static AccountResult result(const api::Object& object, bool loading) {
+    static AccountResult result(const api::Object& object, AccountCommand command) {
+        if (object.get_id() != api::error::ID &&
+            (command == AccountCommand::search_messages || command == AccountCommand::message ||
+             command == AccountCommand::message_link)) return decode_tdlib_read_result(object, command);
         AccountResult result;
         switch (object.get_id()) {
         case api::ok::ID: break;
         case api::error::ID: {
             const auto& error = static_cast<const api::error&>(object);
-            if (loading && error.code_ == 404) result.exhausted = true;
-            else { result.error = classify_error(error); result.retry_after = retry_delay(error); }
+            if (command == AccountCommand::load_chats && error.code_ == 404) result.exhausted = true;
+            else result = decode_tdlib_error(error, command);
             break;
         }
         case api::chats::ID: result.chat_ids = static_cast<const api::chats&>(object).chat_ids_; break;
         case api::chat::ID: {
             const auto& chat = static_cast<const api::chat&>(object);
-            std::size_t end = std::min(chat.title_.size(), std::size_t{512});
-            if (end < chat.title_.size()) {
-                while (end > 0 && (static_cast<unsigned char>(chat.title_[end]) & 0xc0) == 0x80) --end;
-            }
-            result.chat = ChatSummary{chat.id_, chat.title_.substr(0, end),
-                                     chat.type_ ? chat_type(*chat.type_) : "unsupported", chat.title_.size() > 512};
+            bool truncated = false;
+            auto title = bounded_utf8(chat.title_, 512, truncated);
+            result.chat = ChatSummary{chat.id_, std::move(title),
+                                     chat.type_ ? chat_type(*chat.type_) : "unsupported", truncated};
             break;
         }
-        default: result.error = AccountErrorCode::unavailable; break;
+        default: return decode_tdlib_read_result(object, command);
         }
         return result;
     }
@@ -190,7 +178,7 @@ private:
     std::string database_key_;
     std::unique_ptr<td::ClientManager> manager_;
     td::ClientManager::ClientId client_id_;
-    std::set<std::uint64_t> loading_requests_;
+    std::map<std::uint64_t, AccountCommand> requests_;
 };
 
 }
