@@ -36,7 +36,7 @@ jobs:
           CC: clang
           CXX: clang++
           CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.tdlib == 'OFF' && 'ccache' || '' }}
-      - run: cmake --build build --target check -j2
+      - run: cmake --build build --target check --parallel 4
       - name: Compiler cache statistics
         if: ${{ always() && steps.cache.outcome == 'success' }}
         run: ccache --show-stats
