@@ -79,6 +79,7 @@ private:
     AccountResult call(AccountRequest request, Operation& operation);
     Message present(MessageRecord record, const ChatSummary& chat, Operation& operation);
     ChatSummary chat(std::int64_t id, Operation& operation);
+    std::optional<std::vector<std::int64_t>> accessible_chats(Operation& operation);
     int page_size(std::optional<int> limit) const;
     void require_allowed(std::int64_t id) const;
     std::string binding(const std::string& operation, int limit, const std::string& filters = {}) const;

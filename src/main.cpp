@@ -1,6 +1,7 @@
 #include "telegram_mcpp/account.hpp"
 #include "telegram_mcpp/config.hpp"
 #include "telegram_mcpp/logger.hpp"
+#include "telegram_mcpp/mcp.hpp"
 #include "telegram_mcpp/operator_terminal.hpp"
 #include "telegram_mcpp/private_storage.hpp"
 #ifdef TELEGRAM_MCPP_WITH_TDLIB
@@ -26,6 +27,8 @@ void install_signals() {
     if (::sigaction(SIGINT, &action, nullptr) || ::sigaction(SIGTERM, &action, nullptr)) {
         throw std::runtime_error("Cannot install shutdown handlers");
     }
+    action.sa_handler = SIG_IGN;
+    if (::sigaction(SIGPIPE, &action, nullptr)) throw std::runtime_error("Cannot configure pipe shutdown");
 }
 
 struct Command {
@@ -55,7 +58,8 @@ Command parse(int argc, char* argv[]) {
     const bool config = command.group == "config" && (command.action == "init" || command.action == "check");
     const bool auth = command.group == "auth" && (command.action == "login" || command.action == "status" || command.action == "logout");
     const bool chats = command.group == "chats" && command.action == "list";
-    if (!config && !auth && !chats) throw AccountError(AccountErrorCode::invalid_input);
+    const bool mcp = command.group == "mcp" && command.action == "serve";
+    if (!config && !auth && !chats && !mcp) throw AccountError(AccountErrorCode::invalid_input);
     bool offset = false;
     for (int index = 4; index < argc; ++index) {
         const std::string_view option(argv[index]);
@@ -137,7 +141,14 @@ int account_command(const Command& command, telegram_mcpp::Logger& logger) {
     const auto cancelled = [] { return interrupted != 0; };
     AccountAccess access(dispatcher, config.limits.request_timeout, cancelled);
     CloseSession close(access, logger);
-    const auto result = account_operation(command, config, access);
+    int result = 0;
+    if (command.group == "mcp") {
+        const auto status = access.status();
+        if (status.revoked) throw AccountError(AccountErrorCode::revoked);
+        if (status.state != Authorization::ready) throw AccountError(AccountErrorCode::unauthenticated);
+        ReadOperations reads(dispatcher, config);
+        serve_mcp(reads, logger, config.limits.concurrent_requests, cancelled);
+    } else result = account_operation(command, config, access);
     access.close();
     close.dismiss();
     return result;
@@ -152,6 +163,7 @@ int run(int argc, char* argv[], telegram_mcpp::Logger& logger) {
                      "       telegram-mcpp auth login PATH [--phone]\n"
                      "       telegram-mcpp auth <status|logout> PATH\n"
                      "       telegram-mcpp chats list PATH [--archive] [--offset N] [--limit N]\n"
+                     "       telegram-mcpp mcp serve PATH\n"
                      "       telegram-mcpp <--help|--version>\n";
         return 0;
     }

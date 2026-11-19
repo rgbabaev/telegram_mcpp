@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 jobs:
-  read-operations:
+  mcp:
     runs-on: ubuntu-24.04
     env:
       CC: clang
@@ -43,7 +43,7 @@ jobs:
           if [[ "$WITH_TDLIB" == ON ]] && ! command -v gperf >/dev/null; then
             packages+=(gperf)
           fi
-          for package in libssl-dev zlib1g-dev; do
+          for package in libssl-dev zlib1g-dev python3-venv; do
             status=$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)
             if [[ "$status" != "install ok installed" ]]; then
               packages+=("$package")
@@ -69,8 +69,12 @@ jobs:
           restore-keys: |
             ccache-v2-ubuntu-24.04-${{ runner.arch }}-${{ matrix.tdlib }}-${{ steps.compiler.outputs.fingerprint }}-${{ hashFiles('cmake/TDLib.cmake') }}-${{ steps.compiler.outputs.configuration }}-
             ccache-v1-ubuntu-24.04-${{ runner.arch }}-${{ matrix.tdlib }}-${{ steps.compiler.outputs.fingerprint }}-
+      - name: Install reference MCP client
+        run: |
+          python3 -m venv .cache/mcp-client
+          .cache/mcp-client/bin/pip install -r tools/mcp-client-requirements.txt
       - run: ccache --zero-stats
-      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DCMAKE_EXE_LINKER_FLAGS="$BUILD_LINKER_FLAGS" -DTELEGRAM_MCPP_WITH_TDLIB=${{ matrix.tdlib }}
+      - run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE="$BUILD_TYPE" -DCMAKE_EXE_LINKER_FLAGS="$BUILD_LINKER_FLAGS" -DTELEGRAM_MCPP_WITH_TDLIB=${{ matrix.tdlib }} -DTELEGRAM_MCPP_MCP_CLIENT_PYTHON="${{ github.workspace }}/.cache/mcp-client/bin/python"
         env:
           CMAKE_CXX_COMPILER_LAUNCHER: ${{ matrix.tdlib == 'OFF' && 'ccache' || '' }}
       - name: Build and measure resources

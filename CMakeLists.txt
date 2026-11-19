@@ -21,11 +21,14 @@ add_library(telegram_mcpp_core
     src/text.cpp
     src/cursor.cpp
     src/read_json.cpp
+    src/mcp_protocol.cpp
+    src/mcp_stdio.cpp
     src/read_operations.cpp
     src/account.cpp
     src/operator_terminal.cpp
 )
 target_include_directories(telegram_mcpp_core PUBLIC include)
+target_include_directories(telegram_mcpp_core SYSTEM PRIVATE third_party)
 target_link_libraries(telegram_mcpp_core PRIVATE Threads::Threads OpenSSL::Crypto)
 target_compile_options(telegram_mcpp_core PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
@@ -49,12 +52,26 @@ if(BUILD_TESTING)
     target_link_libraries(bootstrap_tests PRIVATE telegram_mcpp_core)
     target_compile_options(bootstrap_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME bootstrap COMMAND bootstrap_tests)
+    add_executable(mcp_fixture tests/mcp_fixture.cpp)
+    target_link_libraries(mcp_fixture PRIVATE telegram_mcpp_core)
+    target_compile_options(mcp_fixture PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_executable(read_tests tests/read_tests.cpp)
     target_link_libraries(read_tests PRIVATE telegram_mcpp_core)
     target_compile_options(read_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
     add_test(NAME read_operations COMMAND read_tests)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(NAME read_json COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/read_json.py $<TARGET_FILE:read_tests>)
+    add_test(NAME mcp_stdio COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_stdio.py $<TARGET_FILE:mcp_fixture>)
+    set_tests_properties(mcp_stdio PROPERTIES TIMEOUT 45)
+    set(TELEGRAM_MCPP_MCP_CLIENT_PYTHON "" CACHE FILEPATH "Python with tools/mcp-client-requirements.txt installed")
+    if(TELEGRAM_MCPP_MCP_CLIENT_PYTHON)
+        add_test(NAME mcp_reference_client COMMAND ${TELEGRAM_MCPP_MCP_CLIENT_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/mcp_smoke.py --server $<TARGET_FILE:mcp_fixture>
+            --fixture normal --chat-id=-9223372036854775808 --message-id=9223372036854775807 --query private-query)
+        add_test(NAME mcp_schemas COMMAND ${TELEGRAM_MCPP_MCP_CLIENT_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_schemas.py $<TARGET_FILE:mcp_fixture>)
+        set_tests_properties(mcp_reference_client mcp_schemas PROPERTIES TIMEOUT 30)
+    endif()
     set_tests_properties(read_operations PROPERTIES TIMEOUT 30)
     add_executable(account_tests tests/account_tests.cpp)
     target_link_libraries(account_tests PRIVATE telegram_mcpp_core)
@@ -75,7 +92,7 @@ if(BUILD_TESTING)
         -DPROGRAM=$<TARGET_FILE:telegram-mcpp> -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli.cmake)
     add_custom_target(check
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-        DEPENDS telegram-mcpp bootstrap_tests account_tests operator_tests read_tests
+        DEPENDS telegram-mcpp bootstrap_tests account_tests operator_tests read_tests mcp_fixture
         USES_TERMINAL
     )
     if(TELEGRAM_MCPP_WITH_TDLIB)

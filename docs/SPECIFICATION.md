@@ -25,8 +25,8 @@ The MVP MUST work with a named local stdio-capable MCP client. ChatGPT connectiv
 - Support terminal QR login and TDLib-required fallback steps, including verification codes and 2FA.
 - Persist and recover sessions. Report revoked authorization; never automatically log out on transient failures.
 - Complete login through operator commands before MCP startup. Never request authentication secrets through MCP.
-- Require an explicit chat-ID allowlist; an empty list grants no access. Enforce it on every tool call.
-- Operator chat discovery may list accessible chats for configuration. MCP exposes only allowed chats.
+- Require the `allowed_chat_ids` configuration key. A nonempty list restricts access to those chat IDs; an empty list allows all accessible chats. Enforce this policy on every tool call.
+- Operator chat discovery may list accessible chats for configuration. MCP exposes configured chats, or all accessible chats when the list is empty.
 
 ## 4. MCP contract
 
@@ -76,16 +76,7 @@ These features MUST NOT delay the MCP MVP:
 
 Before implementing monitoring, specify live-only versus downtime catch-up behavior, deduplication, edit/delete handling, and retention. Lossless monitoring requires recovery tests.
 
-## 7. Implementation order
-
-1. **Bootstrap:** CMake, pinned TDLib, protected configuration, logging, offline test harness.
-2. **Account access:** Login, session recovery, exclusive ownership, operator chat discovery.
-3. **Read operations:** Allowlist enforcement, bounded search, pagination, message retrieval.
-4. **MCP:** stdio, schemas, errors, cancellation, integration with a named local client.
-
-Verify each step before expanding scope. Document assumptions and exact build/run commands. A CLI-only implementation is incomplete.
-
-## 8. Acceptance criteria
+## 7. Acceptance criteria
 
 - Clean build on a documented Linux distribution with pinned TDLib.
 - Manual account smoke test proves login, required 2FA, restart recovery, and chat discovery.
@@ -97,12 +88,10 @@ Verify each step before expanding scope. Document assumptions and exact build/ru
 - README covers setup, credentials, build, login, allowlist, client configuration, tools, limits, and tests.
 - Record idle/search RSS and CPU with hardware, build settings, and TDLib revision. Make no unmeasured memory or runtime claims.
 
-## 9. References
+## 8. References
 
 - TDLib: https://github.com/tdlib/td
 - TDLib lifecycle: https://core.telegram.org/tdlib/getting-started
 - C++ example: https://github.com/tdlib/td/blob/master/example/cpp/td_example.cpp
 - API schema: https://github.com/tdlib/td/blob/master/td/generate/scheme/td_api.tl
 - MCP specification: https://modelcontextprotocol.io/specification/
-
-**Immediate task:** Implement steps 1–4 and satisfy the MCP acceptance criteria. Deferred features require a separate task.
