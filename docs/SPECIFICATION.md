@@ -25,8 +25,8 @@ The MVP MUST work with a named local stdio-capable MCP client. ChatGPT connectiv
 - Support terminal QR login and TDLib-required fallback steps, including verification codes and 2FA.
 - Persist and recover sessions. Report revoked authorization; never automatically log out on transient failures.
 - Complete login through operator commands before MCP startup. Never request authentication secrets through MCP.
-- Require an explicit chat-ID allowlist; an empty list grants no access. Enforce it on every tool call.
-- Operator chat discovery may list accessible chats for configuration. MCP exposes only allowed chats.
+- Require the `allowed_chat_ids` configuration key. A nonempty list restricts access to those chat IDs; an empty list allows all accessible chats. Enforce this policy on every tool call.
+- Operator chat discovery may list accessible chats for configuration. MCP exposes configured chats, or all accessible chats when the list is empty.
 
 ## 4. MCP contract
 

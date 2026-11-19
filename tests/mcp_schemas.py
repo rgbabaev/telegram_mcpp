@@ -3,7 +3,7 @@ from mcp_stdio import Client, MIN_ID, MAX_ID
 
 
 def validate_schemas():
-    for mode in ("normal", "partial", "rate", "unavailable", "maximal", "revoked"):
+    for mode in ("normal", "empty", "partial", "rate", "unavailable", "maximal", "revoked"):
         client = Client(mode)
         try:
             client.initialize()

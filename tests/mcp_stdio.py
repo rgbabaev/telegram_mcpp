@@ -163,16 +163,24 @@ class ProtocolTests(unittest.TestCase):
         self.assert_tool_error(client.call("search_messages", arguments), "invalid_cursor")
         self.assert_tool_error(client.call("search_messages", {"query": "x", "since": "2025-01-01T00:00:00Z", "until": "2024-01-01T00:00:00Z"}), "invalid_input")
 
-    def test_allowlist_and_empty_default(self):
+    def test_explicit_allowlist_and_empty_unrestricted(self):
         client = self.client()
         for name, arguments in (("get_message", {"chat_id": "42", "message_id": "1"}),
                                 ("search_messages", {"query": "x", "chat_id": "42"})):
             self.assert_tool_error(client.call(name, arguments), "denied_chat")
         empty = self.client("empty")
-        self.assertEqual(empty.call("list_chats", {})["result"]["structuredContent"]["chats"], [])
-        page = empty.call("search_messages", {"query": "x"})["result"]["structuredContent"]
-        self.assertEqual((page["messages"], page["status"]), ([], "complete"))
-        self.assert_tool_error(empty.call("get_message", {"chat_id": MIN_ID, "message_id": "2"}), "denied_chat")
+        listing = empty.call("list_chats", {"limit": 1})["result"]["structuredContent"]
+        self.assertEqual(listing["chats"][0]["id"], MIN_ID)
+        listing = empty.call("list_chats", {"limit": 1, "cursor": listing["next_cursor"]})["result"]["structuredContent"]
+        self.assertEqual(listing["chats"][0]["id"], MAX_ID)
+        self.assertIsNone(listing["next_cursor"])
+        page = empty.call("search_messages", {"query": "x", "limit": 1})["result"]["structuredContent"]
+        self.assertEqual((page["messages"][0]["chat_id"], page["status"]), (MIN_ID, "partial"))
+        page = empty.call("search_messages", {"query": "x", "limit": 1, "cursor": page["next_cursor"]})["result"]["structuredContent"]
+        self.assertEqual((page["messages"][0]["chat_id"], page["status"]), (MAX_ID, "complete"))
+        result = empty.call("get_message", {"chat_id": MIN_ID, "message_id": "2"})["result"]
+        self.assertFalse(result["isError"])
+        self.assertEqual(result["structuredContent"]["chat_id"], MIN_ID)
 
     def test_strict_arguments_and_unknown_tools(self):
         client = self.client()

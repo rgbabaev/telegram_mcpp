@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <charconv>
 #include <ctime>
+#include <limits>
 #include <string_view>
 #include <utility>
 
@@ -13,6 +14,7 @@ namespace {
 constexpr std::size_t result_budget = Limits::response_bytes - 4096;
 constexpr std::size_t metadata_budget = 1024;
 constexpr int maximum_search_batches = 10;
+constexpr int maximum_chat_loads = 10;
 
 std::int64_t identifier(const std::string& value, bool positive) {
     if (value.empty() || value.size() > 20) throw ReadError(ReadErrorCode::invalid_input);
@@ -206,17 +208,19 @@ int ReadOperations::page_size(std::optional<int> limit) const {
 }
 
 void ReadOperations::require_allowed(std::int64_t id) const {
-    if (!config_.allowed_chat_ids.count(id)) throw ReadError(ReadErrorCode::denied_chat);
+    if (!allowed_.empty() && !config_.allowed_chat_ids.count(id)) throw ReadError(ReadErrorCode::denied_chat);
 }
 
 std::string ReadOperations::binding(const std::string& operation, int limit, const std::string& filters) const {
-    std::string result = operation + ':' + std::to_string(limit) + ':';
+    std::string result = operation + ':' + std::to_string(limit) + (allowed_.empty() ? ":all:" : ":selected:");
     for (const auto id : allowed_) result += std::to_string(id) + ',';
     return result + ':' + filters;
 }
 
 AccountResult ReadOperations::call(AccountRequest request, Operation& operation) {
-    require_allowed(request.chat_id);
+    if (request.command == AccountCommand::load_chats || request.command == AccountCommand::chat_ids) {
+        if (!allowed_.empty()) throw ReadError(ReadErrorCode::denied_chat);
+    } else require_allowed(request.chat_id);
     const auto timeout = operation.remaining();
     {
         const std::lock_guard<std::mutex> lock(retry_mutex_);
@@ -237,6 +241,32 @@ AccountResult ReadOperations::call(AccountRequest request, Operation& operation)
         }
         throw translated(error);
     }
+}
+
+std::optional<std::vector<std::int64_t>> ReadOperations::accessible_chats(Operation& operation) {
+    if (!allowed_.empty()) return allowed_;
+    std::vector<std::int64_t> ids;
+    int loads = 0;
+    for (const bool archive : {false, true}) {
+        AccountRequest request{AccountCommand::load_chats, {}};
+        request.archive = archive;
+        request.limit = 100;
+        for (;;) {
+            if (loads == maximum_chat_loads) return {};
+            ++loads;
+            if (call(request, operation).exhausted) break;
+        }
+        request.command = AccountCommand::chat_ids;
+        request.limit = std::numeric_limits<int>::max();
+        auto result = call(request, operation);
+        if (std::find(result.chat_ids.begin(), result.chat_ids.end(), 0) != result.chat_ids.end()) {
+            throw ReadError(ReadErrorCode::unavailable);
+        }
+        ids.insert(ids.end(), result.chat_ids.begin(), result.chat_ids.end());
+    }
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    return ids;
 }
 
 ChatSummary ReadOperations::chat(std::int64_t id, Operation& operation) {
@@ -278,19 +308,27 @@ AllowedChatPage ReadOperations::list_chats(const ListChatsInput& input, const Ca
     const auto limit = page_size(input.limit);
     const auto filters = binding("list_chats", limit);
     const auto position = input.cursor ? cursors_.decode(filters, *input.cursor) : CursorPosition{};
-    if ((input.cursor && position.chat_index >= allowed_.size()) || position.from_message_id || position.skip_first) {
+    if (position.from_message_id || position.skip_first) {
         throw ReadError(ReadErrorCode::invalid_cursor);
     }
     Operation operation(*this, cancelled);
     operation.remaining();
     AllowedChatPage page;
+    const auto scope = accessible_chats(operation);
+    if (!scope) {
+        page.next_cursor = cursors_.encode(filters, position);
+        return page;
+    }
+    if (input.cursor && position.chat_index >= scope->size() && !(scope->empty() && position.chat_index == 0)) {
+        throw ReadError(ReadErrorCode::invalid_cursor);
+    }
     std::size_t index = position.chat_index;
-    while (index < allowed_.size() && page.chats.size() < static_cast<std::size_t>(limit)) {
-        page.chats.push_back(chat(allowed_[index], operation));
+    while (index < scope->size() && page.chats.size() < static_cast<std::size_t>(limit)) {
+        page.chats.push_back(chat((*scope)[index], operation));
         if (to_json(page).size() + metadata_budget > result_budget) { page.chats.pop_back(); break; }
         ++index;
     }
-    if (index < allowed_.size()) page.next_cursor = cursors_.encode(filters, {index, 0, false});
+    if (index < scope->size()) page.next_cursor = cursors_.encode(filters, {index, 0, false});
     operation.remaining();
     return page;
 }
@@ -332,12 +370,32 @@ MessagePage ReadOperations::search_messages(const SearchMessagesInput& input, co
         (since ? std::to_string(since->seconds) + '.' + std::to_string(since->nanoseconds) : "*") + ':' +
         (until ? std::to_string(until->seconds) + '.' + std::to_string(until->nanoseconds) : "*"));
     auto position = input.cursor ? cursors_.decode(filters, *input.cursor) : CursorPosition{};
-    if ((input.cursor && position.chat_index >= scope.size()) || (position.skip_first && !position.from_message_id)) {
+    if (position.skip_first && !position.from_message_id) {
         throw ReadError(ReadErrorCode::invalid_cursor);
     }
     Operation operation(*this, cancelled);
     operation.remaining();
     MessagePage page;
+    if (!input.chat_id) {
+        try {
+            const auto discovered = accessible_chats(operation);
+            if (!discovered) {
+                page.status = SearchStatus::partial;
+                page.next_cursor = cursors_.encode(filters, position);
+                return page;
+            }
+            scope = *discovered;
+        } catch (const ReadError& error) {
+            if (error.code() == ReadErrorCode::cancelled || error.code() == ReadErrorCode::unauthenticated) throw;
+            page.status = SearchStatus::failed;
+            page.error = ReadFailure{error.code(), error.retry_after()};
+            page.next_cursor = cursors_.encode(filters, position);
+            return page;
+        }
+    }
+    if (input.cursor && position.chat_index >= scope.size() && !(scope.empty() && position.chat_index == 0)) {
+        throw ReadError(ReadErrorCode::invalid_cursor);
+    }
     std::size_t bytes = metadata_budget;
     int batches = 0;
     bool progressed = false;

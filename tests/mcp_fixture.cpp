@@ -19,11 +19,14 @@ public:
     }
     void send(std::uint64_t id, AccountRequest request) override {
         AccountResult result;
-        if (request.chat_id != INT64_MIN && request.chat_id != INT64_MAX) {
+        const bool discovery = request.command == AccountCommand::load_chats || request.command == AccountCommand::chat_ids;
+        if (!discovery && request.chat_id != INT64_MIN && request.chat_id != INT64_MAX) {
             throw std::runtime_error("Fixture received denied chat");
         }
         if (mode_ == "unavailable") result.error = AccountErrorCode::unavailable;
         else if (mode_ == "rate") { result.error = AccountErrorCode::rate_limited; result.retry_after = 42; }
+        else if (request.command == AccountCommand::load_chats) result.exhausted = true;
+        else if (request.command == AccountCommand::chat_ids) result.chat_ids = {request.archive ? INT64_MAX : INT64_MIN};
         else if (request.command == AccountCommand::chat) {
             result.chat = ChatSummary{request.chat_id, "private-title", "channel", false};
         } else if (request.command == AccountCommand::message_link) {

@@ -72,9 +72,15 @@ struct Backend {
     int batch_size = 100;
     bool exclusive = false;
     bool repeat_last_offset = false;
+    std::vector<std::int64_t> main_chats;
+    std::vector<std::int64_t> archive_chats;
     AccountResult operator()(const AccountRequest& request) const {
         AccountResult result;
-        if (request.command == AccountCommand::chat) {
+        if (request.command == AccountCommand::load_chats) {
+            result.exhausted = true;
+        } else if (request.command == AccountCommand::chat_ids) {
+            result.chat_ids = request.archive ? archive_chats : main_chats;
+        } else if (request.command == AccountCommand::chat) {
             result.chat = ChatSummary{request.chat_id, title, "channel", false};
         } else if (request.command == AccountCommand::message_link) {
             result.link = link;
@@ -141,11 +147,8 @@ SearchMessagesInput search(int limit = 20) {
     return input;
 }
 
-void deny_by_default_and_validate() {
-    Fixture fixture(configuration({}), Backend{});
-    require(fixture.reads->list_chats({}).chats.empty());
-    const auto page = fixture.reads->search_messages(search());
-    require(page.status == SearchStatus::complete && page.messages.empty() && !page.next_cursor);
+void explicit_allowlist_and_validation() {
+    Fixture fixture(configuration({2}), Backend{});
     fails(ReadErrorCode::denied_chat, [&] { fixture.reads->get_message("1", "2"); });
     auto input = search();
     input.chat_id = "1";
@@ -166,6 +169,72 @@ void deny_by_default_and_validate() {
         fails(ReadErrorCode::invalid_input, [&] { fixture.reads->list_chats({limit, {}}); });
     }
     require(fixture.fake->requests().empty());
+}
+
+void empty_allowlist_grants_all_chats() {
+    Backend backend;
+    backend.main_chats = {2, INT64_MIN};
+    backend.archive_chats = {INT64_MAX, 2};
+    for (const auto id : {INT64_MIN, std::int64_t{2}, INT64_MAX}) backend.history[id] = {message(id, 10)};
+    backend.history[42] = {message(42, 11)};
+    Fixture fixture(configuration({}), backend);
+    std::vector<std::int64_t> chats;
+    ListChatsInput listing{1, {}};
+    do {
+        const auto page = fixture.reads->list_chats(listing);
+        for (const auto& chat : page.chats) chats.push_back(chat.id);
+        listing.cursor = page.next_cursor;
+    } while (listing.cursor);
+    require(chats == std::vector<std::int64_t>{INT64_MIN, 2, INT64_MAX});
+    auto input = search(1);
+    std::vector<std::string> found;
+    do {
+        const auto page = fixture.reads->search_messages(input);
+        require(!page.error);
+        for (const auto& item : page.messages) found.push_back(item.chat_id);
+        input.cursor = page.next_cursor;
+    } while (input.cursor);
+    require(found == std::vector<std::string>{std::to_string(INT64_MIN), "2", std::to_string(INT64_MAX)});
+    require(fixture.reads->get_message("42", "11").chat_id == "42");
+    input = search(); input.chat_id = "42";
+    require(fixture.reads->search_messages(input).messages.size() == 1);
+}
+
+void unrestricted_discovery_is_bounded_and_resumable() {
+    Backend backend;
+    backend.main_chats = {1}; backend.archive_chats = {2};
+    backend.history[2] = {message(2, 10)};
+    int main_loads = 0;
+    Fixture fixture(configuration({}), [&](const auto& request) {
+        auto result = backend(request);
+        if (request.command == AccountCommand::load_chats && !request.archive && ++main_loads <= 10) result.exhausted = false;
+        return result;
+    });
+    const auto first = fixture.reads->list_chats({1, {}});
+    require(first.chats.empty() && first.next_cursor && main_loads == 10);
+    const auto second = fixture.reads->list_chats({1, first.next_cursor});
+    require(second.chats.size() == 1 && second.chats[0].id == 1 && second.next_cursor);
+    main_loads = 0;
+    auto input = search();
+    auto page = fixture.reads->search_messages(input);
+    require(page.status == SearchStatus::partial && page.messages.empty() && page.next_cursor && !page.error);
+    input.cursor = page.next_cursor;
+    page = fixture.reads->search_messages(input);
+    require(page.status == SearchStatus::complete && page.messages.size() == 1);
+    for (const auto code : {AccountErrorCode::rate_limited, AccountErrorCode::unavailable}) {
+        Fixture failed(configuration({}), [&](const auto&) {
+            AccountResult result; result.error = code; result.retry_after = code == AccountErrorCode::rate_limited ? 42 : 0;
+            return result;
+        });
+        const auto failure = failed.reads->search_messages(search());
+        require(failure.status == SearchStatus::failed && failure.error && failure.next_cursor);
+    }
+    Fixture empty(configuration({}), Backend{});
+    require(empty.reads->list_chats({}).chats.empty());
+    require(empty.reads->search_messages(search()).status == SearchStatus::complete);
+    backend.main_chats = {0};
+    Fixture malformed(configuration({}), backend);
+    fails(ReadErrorCode::unavailable, [&] { malformed.reads->list_chats({}); });
 }
 
 void allowlisted_chat_pagination_and_precision() {
@@ -490,7 +559,9 @@ int main(int argc, char** argv) {
         return EXIT_SUCCESS;
     }
     const std::vector<std::pair<const char*, std::function<void()>>> tests{
-        {"deny by default and validation", deny_by_default_and_validate},
+        {"explicit allowlist and validation", explicit_allowlist_and_validation},
+        {"empty allowlist grants all chats", empty_allowlist_grants_all_chats},
+        {"bounded unrestricted discovery", unrestricted_discovery_is_bounded_and_resumable},
         {"allowed chat pages and ID precision", allowlisted_chat_pagination_and_precision},
         {"cursor binding and expiry", opaque_cursors_bind_scope_and_expire},
         {"per-chat search pagination", per_chat_search_and_continuation},
