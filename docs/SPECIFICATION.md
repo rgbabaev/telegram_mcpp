@@ -36,8 +36,8 @@ Expose exactly these tools:
 
 | Tool | Inputs | Result |
 |---|---|---|
-| `list_chats` | Optional `limit`, `cursor` | Allowed chats: ID, title, type; next cursor |
-| `search_messages` | Required nonempty `query`; optional `chat_id`, `since`, `until`, `limit`, `cursor` | Messages; next cursor; completion status |
+| `list_chats` | Optional `limit`, `cursor` | Allowed chats: ID, title, type, private-chat `peer_user_id`; next cursor |
+| `search_messages` | Required nonempty `query` unless `chat_id` is supplied; optional `chat_id`, `sender`, `since`, `until`, `limit`, `cursor` | Messages; next cursor; completion status |
 | `get_message` | Required `chat_id`, `message_id` | One message |
 
 Required semantics:
@@ -46,7 +46,12 @@ Required semantics:
 - Encode chat/message IDs as decimal strings to preserve 64-bit values.
 - Use RFC 3339 UTC timestamps. Date bounds are `[since, until)`; reject reversed bounds.
 - Default page size: 20; maximum: 100. Default request timeout: 30 seconds; maximum concurrent requests: 4.
-- Messages contain chat ID/title, message ID, timestamp, text/caption, content type, and a link only when valid. Unsupported content MUST be identified; do not download media.
+- Messages contain chat ID/title, message ID, timestamp, text/caption, content type, `sender`, `is_outgoing`, `reactions`, and a link only when valid. Unsupported content MUST be identified; do not download media.
+- `reactions` is null when TDLib supplies no reaction summary; otherwise it contains `items`, `are_tags`, and `truncated`. An explicitly empty `items` list differs from missing data. Each item includes `type`, nonnegative `total_count`, and `is_chosen` for the current account. Types are `emoji` (with `emoji`), `custom_emoji` (with nonzero signed decimal-string `custom_emoji_id`), `paid`, or `unsupported`. Return at most 100 reaction types and 64 UTF-8 bytes per emoji; mark clipping, repair, or omitted entries with `truncated`. Reaction summaries reflect TDLib's latest known state; do not fetch reactor lists or mark messages read.
+- `sender` is `{type: "user" | "chat", id: decimal-string}` or null when unknown. Preserve the actual sender in this chat, including forwarded messages. User IDs are positive; chat sender IDs are nonzero. Private-chat listings MUST include TDLib's positive `peer_user_id`; other chat types omit it.
+- A supplied query MUST be nonblank valid UTF-8 without NUL, at most 4096 bytes. Omitting it requires `chat_id` and retrieves all content types, including media without captions. Explicit empty queries remain invalid.
+- The optional `sender` input uses the same typed ID object, without null. Apply it in TDLib and validate returned senders. Bind cursors to the sender and query. Sender filtering in secret chats returns `history_unavailable`.
+- Within each chat, search returns decreasing message IDs. An initial single-chat request with `sender` and `limit: 1` returns that sender's latest accessible message. A nonempty partial page without an error can establish the latest match; an empty partial page requires continuation. Telegram history limits and concurrent changes still apply.
 - Limit responses to 256 KiB and individual message text to 8 KiB, measured as UTF-8. Indicate truncation explicitly and preserve valid UTF-8/JSON.
 - Use opaque cursors bound to the operation and filters. Document ordering, expiry, and invalid-cursor behavior. History changes need not preserve snapshot consistency.
 - Cross-chat search MUST search only allowed chats. Filtering a bounded global page afterward is insufficient.
@@ -82,6 +87,8 @@ Before implementing monitoring, specify live-only versus downtime catch-up behav
 - Manual account smoke test proves login, required 2FA, restart recovery, and chat discovery.
 - A named local MCP client discovers and successfully calls all three tools using the saved session.
 - Offline tests cover schemas, invalid input, ID precision, allowlist enforcement across pagination, output limits, invalid cursors, partial search, and unavailable messages.
+- Offline tests cover sender mapping/filtering, private-peer identity, newer outgoing messages, media without captions, forwarded senders, and sender-bound continuations. A live smoke test compares a sender-only latest-message result with Telegram.
+- Offline tests cover reaction mapping, counts, current-account selection, tags, missing/empty summaries, custom-emoji ID precision, unsupported types, UTF-8 truncation, and response budgets. A live smoke test compares a known message's reaction summary with Telegram.
 - Offline tests cover revoked authorization, rate limits, disconnects, timeouts, cancellation, overload, and exclusive session ownership.
 - stdout contains valid MCP traffic only. Logs/errors disclose no secrets or private message contents.
 - SIGTERM shuts down cleanly; a subsequent process can reuse the session.

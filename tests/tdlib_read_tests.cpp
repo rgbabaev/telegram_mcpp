@@ -23,6 +23,21 @@ void request_mapping() {
     const auto& search = static_cast<const api::searchChatMessages&>(*function);
     require(search.chat_id_ == INT64_MIN && search.from_message_id_ == INT64_MAX && search.query_ == "private-query");
     require(search.limit_ == 100 && search.offset_ == 0 && !search.sender_id_ && !search.filter_ && !search.topic_id_);
+    request.secret.clear();
+    for (const auto type : {SenderType::user, SenderType::chat}) {
+        request.sender = Sender{type, type == SenderType::user ? INT64_MAX : INT64_MIN};
+        const auto filtered = make_tdlib_read_function(request);
+        const auto& fields = static_cast<const api::searchChatMessages&>(*filtered);
+        require(fields.query_.empty() && fields.from_message_id_ == INT64_MAX && fields.offset_ == 0);
+        require(fields.sender_id_ != nullptr);
+        if (type == SenderType::user) {
+            require(fields.sender_id_->get_id() == api::messageSenderUser::ID);
+            require(static_cast<const api::messageSenderUser&>(*fields.sender_id_).user_id_ == INT64_MAX);
+        } else {
+            require(fields.sender_id_->get_id() == api::messageSenderChat::ID);
+            require(static_cast<const api::messageSenderChat&>(*fields.sender_id_).chat_id_ == INT64_MIN);
+        }
+    }
     request.command = AccountCommand::message;
     const auto message = make_tdlib_read_function(request);
     require(message->get_id() == api::getMessage::ID);
@@ -40,12 +55,17 @@ void message_mapping() {
     message.chat_id_ = INT64_MIN;
     message.id_ = INT64_MAX;
     message.date_ = 1704067200;
+    message.sender_id_ = api::make_object<api::messageSenderUser>(INT64_MAX);
+    message.is_outgoing_ = true;
+    message.forward_info_ = api::make_object<api::messageForwardInfo>();
+    message.forward_info_->origin_ = api::make_object<api::messageOriginUser>(123);
     auto text = api::make_object<api::messageText>();
     text->text_ = api::make_object<api::formattedText>();
     text->text_->text_ = std::string(8191, 'x') + "€";
     message.content_ = std::move(text);
     auto result = decode_tdlib_message(message);
     require(result.chat_id == INT64_MIN && result.id == INT64_MAX && result.date == 1704067200);
+    require(result.sender && result.sender->type == SenderType::user && result.sender->id == INT64_MAX && result.is_outgoing);
     require(result.text.size() == 8191 && result.text_truncated && valid_utf8(result.text) && result.content_type == "text");
     auto photo = api::make_object<api::messagePhoto>();
     photo->caption_ = api::make_object<api::formattedText>();
@@ -53,6 +73,10 @@ void message_mapping() {
     message.content_ = std::move(photo);
     result = decode_tdlib_message(message);
     require(result.content_type == "photo" && result.text == "private-caption");
+    message.sender_id_ = api::make_object<api::messageSenderChat>(INT64_MIN);
+    message.is_outgoing_ = false;
+    result = decode_tdlib_message(message);
+    require(result.sender && result.sender->type == SenderType::chat && result.sender->id == INT64_MIN && !result.is_outgoing);
     auto video = api::make_object<api::messageVideo>();
     video->caption_ = api::make_object<api::formattedText>();
     video->caption_->text_ = "private-video-caption";
@@ -63,6 +87,65 @@ void message_mapping() {
     require(result.content_type == "unsupported" && result.text.empty());
     message.content_.reset();
     require(decode_tdlib_message(message).content_type == "unsupported");
+    message.sender_id_.reset();
+    require(!decode_tdlib_message(message).sender);
+}
+
+void private_chat_mapping() {
+    api::chat chat;
+    chat.id_ = 42;
+    chat.title_ = "private-title";
+    chat.type_ = api::make_object<api::chatTypePrivate>(INT64_MAX);
+    const auto result = decode_tdlib_chat(chat);
+    require(result.id == 42 && result.title == chat.title_ && result.type == "private");
+    require(result.peer_user_id == INT64_MAX && !result.title_truncated);
+    chat.type_ = api::make_object<api::chatTypeBasicGroup>(20);
+    require(!decode_tdlib_chat(chat).peer_user_id && decode_tdlib_chat(chat).type == "basic_group");
+    chat.type_.reset();
+    require(!decode_tdlib_chat(chat).peer_user_id && decode_tdlib_chat(chat).type == "unsupported");
+}
+
+api::object_ptr<api::messageReaction> reaction(api::object_ptr<api::ReactionType> type, int count, bool chosen = false) {
+    auto result = api::make_object<api::messageReaction>();
+    result->type_ = std::move(type);
+    result->total_count_ = count;
+    result->is_chosen_ = chosen;
+    return result;
+}
+
+void reaction_mapping() {
+    api::message message;
+    require(!decode_tdlib_message(message).reactions);
+    message.interaction_info_ = api::make_object<api::messageInteractionInfo>();
+    require(!decode_tdlib_message(message).reactions);
+    auto& source = message.interaction_info_->reactions_;
+    source = api::make_object<api::messageReactions>();
+    auto result = decode_tdlib_message(message);
+    require(result.reactions && result.reactions->items.empty() && !result.reactions->truncated);
+    source->are_tags_ = true;
+    source->reactions_.push_back(reaction(api::make_object<api::reactionTypeEmoji>("❤️"), 2, true));
+    source->reactions_.push_back(reaction(api::make_object<api::reactionTypeCustomEmoji>(INT64_MAX), 3));
+    source->reactions_.push_back(reaction(api::make_object<api::reactionTypeCustomEmoji>(INT64_MIN), 4));
+    source->reactions_.push_back(reaction(api::make_object<api::reactionTypePaid>(), 5));
+    source->reactions_.push_back(reaction(nullptr, 6));
+    result = decode_tdlib_message(message);
+    require(result.reactions && result.reactions->are_tags && !result.reactions->truncated);
+    const auto& items = result.reactions->items;
+    require(items.size() == 5);
+    require(items[0].type == "emoji" && items[0].emoji == "❤️" && items[0].total_count == 2 && items[0].is_chosen);
+    require(items[1].type == "custom_emoji" && items[1].custom_emoji_id == INT64_MAX && !items[1].is_chosen);
+    require(items[2].custom_emoji_id == INT64_MIN && items[2].total_count == 4);
+    require(items[3].type == "paid" && items[3].total_count == 5);
+    require(items[4].type == "unsupported" && items[4].total_count == 6);
+    source->reactions_.push_back(nullptr);
+    require(decode_tdlib_message(message).reactions->truncated);
+    source->reactions_.clear();
+    for (int index = 0; index < 101; ++index) {
+        source->reactions_.push_back(reaction(api::make_object<api::reactionTypeEmoji>(std::string(63, 'x') + "❤️"), 1));
+    }
+    result = decode_tdlib_message(message);
+    require(result.reactions->items.size() == Limits::maximum_reaction_types && result.reactions->truncated);
+    require(result.reactions->items[0].emoji.size() == 63 && valid_utf8(result.reactions->items[0].emoji));
 }
 
 void error_mapping() {
@@ -110,7 +193,7 @@ void response_mapping() {
 }
 
 int main() {
-    try { request_mapping(); message_mapping(); response_mapping(); error_mapping(); }
+    try { request_mapping(); message_mapping(); private_chat_mapping(); reaction_mapping(); response_mapping(); error_mapping(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return EXIT_FAILURE; }
     return EXIT_SUCCESS;
 }

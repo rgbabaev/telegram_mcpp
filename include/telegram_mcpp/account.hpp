@@ -53,12 +53,14 @@ struct AccountRequest {
     int limit = 20;
     bool archive = false;
     std::int64_t message_id = 0;
+    std::optional<Sender> sender = {};
 };
 struct ChatSummary {
     std::int64_t id = 0;
     std::string title;
     std::string type;
     bool title_truncated = false;
+    std::optional<std::int64_t> peer_user_id = {};
 };
 struct AccountResult {
     std::optional<AccountErrorCode> error;

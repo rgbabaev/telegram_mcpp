@@ -70,7 +70,11 @@ if(BUILD_TESTING)
             --fixture normal --chat-id=-9223372036854775808 --message-id=9223372036854775807 --query private-query)
         add_test(NAME mcp_schemas COMMAND ${TELEGRAM_MCPP_MCP_CLIENT_PYTHON}
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/mcp_schemas.py $<TARGET_FILE:mcp_fixture>)
-        set_tests_properties(mcp_reference_client mcp_schemas PROPERTIES TIMEOUT 30)
+        add_test(NAME mcp_latest_message COMMAND ${TELEGRAM_MCPP_MCP_CLIENT_PYTHON}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/mcp_smoke.py --server $<TARGET_FILE:mcp_fixture>
+            --fixture latest --chat-id=-9223372036854775808 --message-id=2 --query private-query
+            --sender-user-id=9223372036854775807)
+        set_tests_properties(mcp_reference_client mcp_schemas mcp_latest_message PROPERTIES TIMEOUT 30)
     endif()
     set_tests_properties(read_operations PROPERTIES TIMEOUT 30)
     add_executable(account_tests tests/account_tests.cpp)

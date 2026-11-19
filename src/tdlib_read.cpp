@@ -1,6 +1,7 @@
 #include "telegram_mcpp/tdlib_read.hpp"
 #include "telegram_mcpp/text.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <string_view>
 
@@ -35,6 +36,64 @@ struct Content {
     std::string type = "unsupported";
     const api::formattedText* text = nullptr;
 };
+
+std::optional<Sender> sender(const api::MessageSender* value) {
+    if (!value) return {};
+    switch (value->get_id()) {
+    case api::messageSenderUser::ID:
+        return Sender{SenderType::user, static_cast<const api::messageSenderUser&>(*value).user_id_};
+    case api::messageSenderChat::ID:
+        return Sender{SenderType::chat, static_cast<const api::messageSenderChat&>(*value).chat_id_};
+    default: return {};
+    }
+}
+
+Reaction reaction(const api::messageReaction& value, bool& truncated) {
+    Reaction result;
+    result.total_count = value.total_count_;
+    result.is_chosen = value.is_chosen_;
+    if (!value.type_) return result;
+    switch (value.type_->get_id()) {
+    case api::reactionTypeEmoji::ID:
+        result.type = "emoji";
+        result.emoji = bounded_utf8(static_cast<const api::reactionTypeEmoji&>(*value.type_).emoji_,
+                                    Limits::reaction_emoji_bytes, truncated);
+        break;
+    case api::reactionTypeCustomEmoji::ID:
+        result.type = "custom_emoji";
+        result.custom_emoji_id = static_cast<const api::reactionTypeCustomEmoji&>(*value.type_).custom_emoji_id_;
+        break;
+    case api::reactionTypePaid::ID: result.type = "paid"; break;
+    default: break;
+    }
+    return result;
+}
+
+std::optional<MessageReactions> reactions(const api::messageInteractionInfo* interaction) {
+    if (!interaction || !interaction->reactions_) return {};
+    const auto& source = *interaction->reactions_;
+    MessageReactions result;
+    result.are_tags = source.are_tags_;
+    result.truncated = source.reactions_.size() > Limits::maximum_reaction_types;
+    const auto count = std::min(source.reactions_.size(), Limits::maximum_reaction_types);
+    for (std::size_t index = 0; index < count; ++index) {
+        if (source.reactions_[index]) result.items.push_back(reaction(*source.reactions_[index], result.truncated));
+        else result.truncated = true;
+    }
+    return result;
+}
+
+std::string chat_type(const api::ChatType* type) {
+    if (!type) return "unsupported";
+    switch (type->get_id()) {
+    case api::chatTypePrivate::ID: return "private";
+    case api::chatTypeBasicGroup::ID: return "basic_group";
+    case api::chatTypeSupergroup::ID:
+        return static_cast<const api::chatTypeSupergroup&>(*type).is_channel_ ? "channel" : "supergroup";
+    case api::chatTypeSecret::ID: return "secret";
+    default: return "unsupported";
+    }
+}
 
 Content content(const api::MessageContent& value) {
     switch (value.get_id()) {
@@ -71,10 +130,24 @@ MessageRecord decode_tdlib_message(const td::td_api::message& message) {
     result.chat_id = message.chat_id_;
     result.id = message.id_;
     result.date = message.date_;
+    result.sender = sender(message.sender_id_.get());
+    result.is_outgoing = message.is_outgoing_;
+    result.reactions = reactions(message.interaction_info_.get());
     if (message.content_) {
         const auto decoded = content(*message.content_);
         result.content_type = decoded.type;
         if (decoded.text) result.text = bounded_utf8(decoded.text->text_, Limits::message_text_bytes, result.text_truncated);
+    }
+    return result;
+}
+
+ChatSummary decode_tdlib_chat(const td::td_api::chat& chat) {
+    ChatSummary result;
+    result.id = chat.id_;
+    result.title = bounded_utf8(chat.title_, 512, result.title_truncated);
+    result.type = chat_type(chat.type_.get());
+    if (result.type == "private") {
+        result.peer_user_id = static_cast<const api::chatTypePrivate&>(*chat.type_).user_id_;
     }
     return result;
 }
@@ -117,6 +190,13 @@ td::td_api::object_ptr<td::td_api::Function> make_tdlib_read_function(const Acco
         function->from_message_id_ = request.message_id;
         function->offset_ = 0;
         function->limit_ = request.limit;
+        if (request.sender) {
+            if (request.sender->type == SenderType::user) {
+                function->sender_id_ = api::make_object<api::messageSenderUser>(request.sender->id);
+            } else {
+                function->sender_id_ = api::make_object<api::messageSenderChat>(request.sender->id);
+            }
+        }
         return function;
     }
     case AccountCommand::message: return api::make_object<api::getMessage>(request.chat_id, request.message_id);
