@@ -30,6 +30,9 @@ public:
         else if (request.command == AccountCommand::chat) {
             result.chat = ChatSummary{request.chat_id, "private-title", "channel", false};
             if (mode_ == "latest") result.chat = ChatSummary{request.chat_id, "Євгенія Олександрівна ❤️", "private", false, INT64_MAX};
+            if (mode_ == "secret") result.chat->type = "secret";
+        } else if (request.command == AccountCommand::set_draft) {
+            if (mode_ == "draft-unavailable") result.error = AccountErrorCode::draft_unavailable;
         } else if (request.command == AccountCommand::message_link) {
             result.link = "https://t.me/example/1";
         } else if (request.command == AccountCommand::message) {
@@ -114,8 +117,8 @@ int main(int argc, char* argv[]) {
         AccountDispatcher dispatcher(std::make_unique<Transport>(mode), logger);
         AccountAccess access(dispatcher, 1s, {});
         if (access.status().state != Authorization::ready) return 1;
-        ReadOperations reads(dispatcher, config);
-        serve_mcp(reads, logger, 4, [] { return interrupted != 0; });
+        TelegramOperations operations(dispatcher, config);
+        serve_mcp(operations, logger, 4, [] { return interrupted != 0; });
         return interrupted ? 128 + interrupted : 0;
     } catch (...) { return 1; }
 }

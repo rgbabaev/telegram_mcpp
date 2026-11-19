@@ -146,8 +146,8 @@ int account_command(const Command& command, telegram_mcpp::Logger& logger) {
         const auto status = access.status();
         if (status.revoked) throw AccountError(AccountErrorCode::revoked);
         if (status.state != Authorization::ready) throw AccountError(AccountErrorCode::unauthenticated);
-        ReadOperations reads(dispatcher, config);
-        serve_mcp(reads, logger, config.limits.concurrent_requests, cancelled);
+        TelegramOperations operations(dispatcher, config);
+        serve_mcp(operations, logger, config.limits.concurrent_requests, cancelled);
     } else result = account_operation(command, config, access);
     access.close();
     close.dismiss();

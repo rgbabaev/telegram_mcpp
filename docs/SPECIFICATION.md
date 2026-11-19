@@ -1,11 +1,11 @@
 # Telegram MCP Server — Specification
 
 **Platform:** Linux, C++17+, CMake, TDLib
-**MVP:** One personal Telegram user account; read-only MCP access
+**MVP:** One personal Telegram user account; reads and synchronized text drafts
 
 ## 1. Goal
 
-Build a self-hosted MCP server that lets an authorized AI client list selected Telegram chats, search history, and retrieve messages using the owner's regular user account.
+Build a self-hosted MCP server that lets an authorized AI client list selected Telegram chats, search history, retrieve messages, and prepare synchronized drafts using the owner's regular user account. The owner sends messages manually in Telegram.
 
 The MVP MUST work with a named local stdio-capable MCP client. ChatGPT connectivity is deferred until its target product, transport, and authorization requirements are verified.
 
@@ -39,6 +39,7 @@ Expose exactly these tools:
 | `list_chats` | Optional `limit`, `cursor` | Allowed chats: ID, title, type, private-chat `peer_user_id`; next cursor |
 | `search_messages` | Required nonempty `query` unless `chat_id` is supplied; optional `chat_id`, `sender`, `since`, `until`, `limit`, `cursor` | Messages; next cursor; completion status |
 | `get_message` | Required `chat_id`, `message_id` | One message |
+| `set_draft` | Required `chat_id`, `text` | Chat ID and status `saved` or `cleared` |
 
 Required semantics:
 
@@ -58,7 +59,11 @@ Required semantics:
 - Distinguish complete, partial, and failed searches. Never report an incomplete search as a complete empty result.
 - Define stable errors for invalid input/cursor, unauthenticated session, denied chat, unavailable message/history, rate limit, timeout, and unavailable service. Include known retry guidance; omit secrets and internal traces.
 - Treat Telegram content as untrusted data. Tool descriptions MUST state that message text is not instructions or authorization.
-- Never expose arbitrary TDLib execution, file access, message mutations, or rule mutations.
+- `set_draft` replaces the entire chat-level draft with plain text; an empty string clears it. Reject invalid UTF-8, NUL, nonempty ASCII-whitespace-only text, more than 4096 Unicode characters, or more than 16384 UTF-8 bytes. Never truncate draft input.
+- Check authorization, allowlist, cancellation, deadlines, concurrency, and shared rate cooldown before every draft request. Reject secret/unsupported chats with `draft_unavailable`; map Telegram draft rejections to that code. Topics, replies, formatting, and media draft inputs are outside this feature.
+- Use only TDLib `setChatDraftMessage` with text draft content, or a null draft to clear. Do not send, schedule, edit, or delete messages. Mark `set_draft` as a write that may replace existing data in MCP annotations; reads remain read-only.
+- Draft success confirms local TDLib acceptance. Cloud synchronization is asynchronous; do not claim another device has received it. Device edits may overwrite a draft. Timeout/cancellation after submission may leave the draft saved; do not retry automatically.
+- Never expose arbitrary TDLib execution, file access, sent-message mutations, or rule mutations.
 
 ## 5. Reliability and privacy
 
@@ -85,7 +90,8 @@ Before implementing monitoring, specify live-only versus downtime catch-up behav
 
 - Clean build on a documented Linux distribution with pinned TDLib.
 - Manual account smoke test proves login, required 2FA, restart recovery, and chat discovery.
-- A named local MCP client discovers and successfully calls all three tools using the saved session.
+- A named local MCP client discovers all four tools and successfully calls the read tools using the saved session. A live draft smoke test requires an explicitly chosen chat and text; compare the saved draft in another Telegram app without sending it.
+- Offline tests cover draft text/clear mapping, Unicode/size validation, allowlist enforcement, secret chats, authorization revocation before submission, shared read/write cooldown, single-attempt errors, strict schemas, write annotations, and absent sending tools.
 - Offline tests cover schemas, invalid input, ID precision, allowlist enforcement across pagination, output limits, invalid cursors, partial search, and unavailable messages.
 - Offline tests cover sender mapping/filtering, private-peer identity, newer outgoing messages, media without captions, forwarded senders, and sender-bound continuations. A live smoke test compares a sender-only latest-message result with Telegram.
 - Offline tests cover reaction mapping, counts, current-account selection, tags, missing/empty summaries, custom-emoji ID precision, unsupported types, UTF-8 truncation, and response budgets. A live smoke test compares a known message's reaction summary with Telegram.

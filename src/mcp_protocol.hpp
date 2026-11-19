@@ -1,6 +1,6 @@
 #pragma once
 
-#include "telegram_mcpp/read_operations.hpp"
+#include "telegram_mcpp/telegram_operations.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -25,9 +25,9 @@ bool valid_id(const Json& id);
 void fields(const Json& object, std::initializer_list<const char*> allowed);
 Json result(const Json& id, Json value);
 Json error(const Json& id, int code, const char* message);
-Json tool_error(const Json& id, ReadErrorCode code, int retry_after = 0);
+Json tool_error(const Json& id, OperationErrorCode code, int retry_after = 0);
 Json tools();
 void validate_call(const Json& params);
-Json execute(ReadOperations& reads, const Json& id, const Json& params, const Cancelled& cancelled);
+Json execute(TelegramOperations& operations, const Json& id, const Json& params, const Cancelled& cancelled);
 
 }

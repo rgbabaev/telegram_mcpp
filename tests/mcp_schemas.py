@@ -12,7 +12,9 @@ def validate_schemas():
             calls = [("list_chats", {}), ("search_messages", {"query": "private-query", "limit": 100}),
                      ("search_messages", {"chat_id": MIN_ID, "limit": 1}),
                      ("search_messages", {"chat_id": MIN_ID, "sender": {"type": "user", "id": MAX_ID}, "limit": 1}),
-                     ("get_message", {"chat_id": MIN_ID, "message_id": MAX_ID})]
+                     ("get_message", {"chat_id": MIN_ID, "message_id": MAX_ID}),
+                     ("set_draft", {"chat_id": MIN_ID, "text": "private-draft: Привіт 👋"}),
+                     ("set_draft", {"chat_id": MIN_ID, "text": ""})]
             for name, arguments in calls:
                 tool = tools[name]
                 for key in ("inputSchema", "outputSchema"):
@@ -37,7 +39,10 @@ def validate_schemas():
                            ("search_messages", {"chat_id": MIN_ID, "query": ""}),
                            ("search_messages", {"chat_id": MIN_ID, "sender": {"type": "user", "id": "-1"}}),
                            ("search_messages", {"chat_id": MIN_ID, "sender": {"type": "bot", "id": "1"}}),
-                           ("search_messages", {"chat_id": MIN_ID, "sender": {"type": "chat", "id": MIN_ID, "extra": 1}})]
+                           ("search_messages", {"chat_id": MIN_ID, "sender": {"type": "chat", "id": MIN_ID, "extra": 1}}),
+                           ("set_draft", {"chat_id": MIN_ID}), ("set_draft", {"chat_id": MIN_ID, "text": None}),
+                           ("set_draft", {"chat_id": MIN_ID, "text": "👋" * 4097}),
+                           ("set_draft", {"chat_id": MIN_ID, "text": "x", "send": True})]
                 for name, arguments in invalid:
                     assert not Draft202012Validator(tools[name]["inputSchema"]).is_valid(arguments)
             if mode == "reactions":
