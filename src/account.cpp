@@ -20,6 +20,7 @@ const char* error_message(AccountErrorCode code) {
     case AccountErrorCode::qr_unavailable: return "QR login was rejected; rerun auth login with --phone";
     case AccountErrorCode::message_unavailable: return "Message is unavailable";
     case AccountErrorCode::history_unavailable: return "Chat history is unavailable";
+    case AccountErrorCode::draft_unavailable: return "Chat draft is unavailable";
     case AccountErrorCode::unsupported: return "This authorization step requires an official Telegram app";
     }
     return "Account operation failed";

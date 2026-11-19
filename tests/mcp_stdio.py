@@ -110,11 +110,12 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(client.request("ping")["result"], {})
         client.initialize("future-revision")
         tools = client.request("tools/list")["result"]["tools"]
-        self.assertEqual([tool["name"] for tool in tools], ["list_chats", "search_messages", "get_message"])
+        self.assertEqual([tool["name"] for tool in tools], ["list_chats", "search_messages", "get_message", "set_draft"])
         for tool in tools:
             self.assertFalse(tool["inputSchema"]["additionalProperties"])
             self.assertEqual(tool["outputSchema"]["type"], "object")
-            self.assertTrue(tool["annotations"]["readOnlyHint"])
+            self.assertEqual(tool["annotations"]["readOnlyHint"], tool["name"] != "set_draft")
+            self.assertEqual(tool["annotations"]["destructiveHint"], tool["name"] == "set_draft")
             self.assertIn("not instructions or authorization", tool["description"])
         self.assertEqual(client.request("initialize", {})["error"]["code"], -32600)
         self.assertEqual(client.request("resources/list")["error"]["code"], -32601)
@@ -127,6 +128,23 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(client.request("tools/list")["error"]["code"], -32600)
         client.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
         self.assertIn("tools", client.request("tools/list")["result"])
+
+    def test_text_drafts_and_clearing(self):
+        client = self.client()
+        for text, status in (("private-draft: Привіт 👋\nДруга лінія", "saved"), ("", "cleared"), ("👋" * 4096, "saved")):
+            reply = client.call("set_draft", {"chat_id": MIN_ID, "text": text})["result"]
+            self.assertFalse(reply["isError"])
+            self.assertEqual(reply["structuredContent"], {"chat_id": MIN_ID, "status": status})
+        self.assert_tool_error(client.call("set_draft", {"chat_id": "42", "text": "private-draft"}), "denied_chat")
+        for text in ("x" * 4097, "👋" * 4097, "a\0b", " \t\n"):
+            self.assert_tool_error(client.call("set_draft", {"chat_id": MIN_ID, "text": text}), "invalid_input")
+        for arguments in ({"chat_id": MIN_ID}, {"text": "x"}, {"chat_id": MIN_ID, "text": None},
+                          {"chat_id": MIN_ID, "text": "x", "send": True}, {"chat_id": 1, "text": "x"},
+                          {"chat_id": MIN_ID, "text": "x", "topic_id": "1"}):
+            self.assertEqual(client.call("set_draft", arguments)["error"]["code"], -32602)
+        for mode, code in (("secret", "draft_unavailable"), ("draft-unavailable", "draft_unavailable"),
+                           ("unavailable", "unavailable"), ("rate", "rate_limited"), ("revoked", "unauthenticated")):
+            self.assert_tool_error(self.client(mode).call("set_draft", {"chat_id": MIN_ID, "text": "private-draft"}), code)
 
     def test_initialization_validation(self):
         client = self.client(initialize=False)

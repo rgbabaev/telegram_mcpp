@@ -28,12 +28,15 @@ async def smoke(arguments):
                     await asyncio.sleep(1)
             discovered = await session.list_tools()
             tools = {tool.name: tool for tool in discovered.tools}
-            assert set(tools) == {"list_chats", "search_messages", "get_message"}
+            assert set(tools) == {"list_chats", "search_messages", "get_message", "set_draft"}
             calls = [
                 ("list_chats", {"limit": 1}),
                 ("search_messages", {"query": arguments.query, "chat_id": arguments.chat_id, "limit": 1}),
                 ("get_message", {"chat_id": arguments.chat_id, "message_id": arguments.message_id}),
             ]
+            if arguments.fixture:
+                calls.extend([("set_draft", {"chat_id": arguments.chat_id, "text": "private-draft"}),
+                              ("set_draft", {"chat_id": arguments.chat_id, "text": ""})])
             if arguments.sender_user_id:
                 calls.append(("search_messages", {"chat_id": arguments.chat_id,
                     "sender": {"type": "user", "id": arguments.sender_user_id}, "limit": 1}))

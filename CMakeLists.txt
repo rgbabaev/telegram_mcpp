@@ -23,7 +23,7 @@ add_library(telegram_mcpp_core
     src/read_json.cpp
     src/mcp_protocol.cpp
     src/mcp_stdio.cpp
-    src/read_operations.cpp
+    src/telegram_operations.cpp
     src/account.cpp
     src/operator_terminal.cpp
 )
@@ -38,7 +38,7 @@ target_compile_options(telegram-mcpp PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 if(TELEGRAM_MCPP_WITH_TDLIB)
     include(cmake/TDLib.cmake)
-    add_library(telegram_mcpp_tdlib src/tdlib.cpp src/tdlib_read.cpp)
+    add_library(telegram_mcpp_tdlib src/tdlib.cpp src/tdlib_read.cpp src/tdlib_draft.cpp)
     target_include_directories(telegram_mcpp_tdlib PUBLIC include)
     target_include_directories(telegram_mcpp_tdlib SYSTEM PRIVATE $<TARGET_PROPERTY:Td::TdStatic,INTERFACE_INCLUDE_DIRECTORIES>)
     target_compile_options(telegram_mcpp_tdlib PRIVATE -Wall -Wextra -Wpedantic -Werror)

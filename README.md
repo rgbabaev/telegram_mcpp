@@ -1,6 +1,6 @@
 # telegram_mcpp
 
-Read-only Telegram MCP server for one personal account, with protected account access, chat allowlists, and local stdio MCP. See [the specification](docs/SPECIFICATION.md).
+Telegram MCP server for one personal account, with reads, synchronized text drafts, protected account access, chat allowlists, and local stdio MCP. Send prepared drafts manually in Telegram. See [the specification](docs/SPECIFICATION.md).
 
 ## Build
 
@@ -72,7 +72,7 @@ Chat discovery deliberately includes chats outside the MCP allowlist so the oper
 
 ## Read operations
 
-The application API is [ReadOperations](include/telegram_mcpp/read_operations.hpp): `list_chats`, `search_messages`, and `get_message`. Initialize the saved session with `AccountAccess::status()` before constructing it. Reuse one instance per dispatcher. The MCP adapter calls this API directly.
+The application API is [TelegramOperations](include/telegram_mcpp/telegram_operations.hpp): `list_chats`, `search_messages`, `get_message`, and `set_draft`. Initialize the saved session with `AccountAccess::status()` before constructing it. Reuse one instance per dispatcher so reads and drafts share concurrency and rate cooldown. The MCP adapter calls this API directly.
 
 Every Telegram read rechecks authorization and the immutable configured allowlist. An empty allowlist permits message retrieval and single-chat search in any accessible chat. Chat listing and cross-chat search discover main and archived chats, deduplicate IDs, and use that scope. Cross-chat search issues only per-chat `searchChatMessages` requests for allowed IDs; it never searches globally. Chat listing follows ascending signed chat ID; search groups by that order and uses decreasing message ID within each chat. Single-chat search has the same message order. Unrestricted discovery attempts at most ten `loadChats` batches of up to 100 chats per call before listing/searching. Until both lists are exhausted, listing returns an empty page with a continuation and search returns an empty `partial` page. Continue with the cursor; loading progress stays in TDLib. Discovery shares the request deadline and retry/cancellation policy. IDs are read transiently from TDLib after loading; no chat/message mirror is retained. No snapshot consistency is promised as history changes.
 
@@ -86,9 +86,13 @@ JSON results keep IDs as strings, escape controls, preserve valid UTF-8, and exp
 
 Both message tools return `reactions: {items, are_tags, truncated}`, or null when TDLib supplies no summary. Items contain `type`, `total_count`, and `is_chosen` for the current account. Emoji reactions include `emoji`; custom emoji include a nonzero signed decimal-string `custom_emoji_id`; paid and unsupported reactions have no additional payload. At most 100 types and 64 UTF-8 bytes per emoji are returned; `truncated` marks clipping, repair, or omitted entries. Empty `items` means an explicitly empty summary. Tags are identified by `are_tags`. Data reflects TDLib's latest known state; no reactor lists, extra refresh requests, or read receipts are issued.
 
-Stable errors: `invalid_input`, `invalid_cursor`, `unauthenticated`, `denied_chat`, `message_unavailable`, `history_unavailable`, `rate_limited`, `timeout`, `cancelled`, `overloaded`, and `unavailable`. Queries, text, titles, and raw Telegram errors are absent from logs. No result cache, mirror, or local index is created. Telegram may restrict searchable history or return fewer matches than exist; `complete` describes TDLib pagination, not proof of exhaustive historical access. Secret-chat search is unsupported; sender filtering there explicitly returns `history_unavailable`.
+Stable errors: `invalid_input`, `invalid_cursor`, `unauthenticated`, `denied_chat`, `message_unavailable`, `history_unavailable`, `draft_unavailable`, `rate_limited`, `timeout`, `cancelled`, `overloaded`, and `unavailable`. Queries, text, titles, and raw Telegram errors are absent from logs. No result cache, mirror, or local index is created. Telegram may restrict searchable history or return fewer matches than exist; `complete` describes TDLib pagination, not proof of exhaustive historical access. Secret-chat search is unsupported; sender filtering there explicitly returns `history_unavailable`.
 
 ## MCP server and client
+
+`set_draft` accepts `{"chat_id":"12345","text":"Привіт!"}` and returns `{"chat_id":"12345","status":"saved"}`. It replaces the entire existing chat draft, including formatting and reply context. Pass `"text":""` to clear it (`status: "cleared"`). Text must be valid UTF-8 without NUL, at most 4096 Unicode characters / 16384 bytes; nonempty ASCII-whitespace-only text is rejected. The same chat allowlist applies. Secret chats, topics, replies, formatting, and media draft inputs are unsupported; chat restrictions return `draft_unavailable`.
+
+Success means TDLib accepted the draft locally; TDLib synchronizes it asynchronously with Telegram and other connected apps. Another device may overwrite it. A timed-out/cancelled request may still take effect after submission; do not retry automatically. This tool never sends a message. MCP marks it as a write that can replace data. Reconnect the MCP client after upgrading to discover it.
 
 Complete login and configure `allowed_chat_ids` first. Stop other account commands before starting the server:
 
@@ -121,7 +125,7 @@ python3 -m venv .cache/mcp-client
   --chat-id=-1001234567890 --message-id=123456789 --query smoke
 ```
 
-Replace the IDs with an allowed chat and an existing `message_id` returned by `search_messages`; use a harmless search query. This discovers and calls all three tools and prints only pass/fail notices. The server never accepts login secrets through MCP. ChatGPT/remote transport integration remains deferred.
+Replace the IDs with an allowed chat and an existing `message_id` returned by `search_messages`; use a harmless search query. This discovers all four tools, calls the three read tools, and prints only pass/fail notices. Offline fixtures also exercise setting/clearing drafts; live smoke runs never modify drafts. The server never accepts login secrets through MCP. ChatGPT/remote transport integration remains deferred.
 
 | Tool | Arguments | Structured result |
 |---|---|---|
@@ -152,6 +156,8 @@ With your own credentials, run QR login, verify `status`, restart and verify `st
 For latest-message verification, compare the sender-only result with Telegram, including timestamp and content type. Add `--sender-user-id <peer_user_id>` to `tools/mcp_smoke.py`, with `--message-id` set to their latest message ID, to assert the sender and message ID through the reference client. Include a chat with a newer outgoing message. Reconnect the MCP client after upgrading so it discovers the updated schemas.
 
 For reactions, retrieve a known message with `get_message` and compare reaction types, counts, and your selected reactions with Telegram. Also check `search_messages` for the same message. A null summary reports missing TDLib data, not a confirmed empty list.
+
+For a live draft test, explicitly choose a chat and text, call `set_draft`, and check the draft in another Telegram app without sending it. Preserve any existing draft before testing. This manual cross-device check has not been performed here.
 
 ## Offline tests
 

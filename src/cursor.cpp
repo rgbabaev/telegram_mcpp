@@ -1,5 +1,5 @@
 #include "telegram_mcpp/cursor.hpp"
-#include "telegram_mcpp/read_operations.hpp"
+#include "telegram_mcpp/telegram_operations.hpp"
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
@@ -38,11 +38,11 @@ std::string hexadecimal(const std::string& bytes) {
 }
 
 std::string unhex(const std::string& text) {
-    if (text.size() != 116) throw ReadError(ReadErrorCode::invalid_cursor);
+    if (text.size() != 116) throw OperationError(OperationErrorCode::invalid_cursor);
     const auto digit = [](char value) -> unsigned char {
         if (value >= '0' && value <= '9') return value - '0';
         if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-        throw ReadError(ReadErrorCode::invalid_cursor);
+        throw OperationError(OperationErrorCode::invalid_cursor);
     };
     std::string result;
     for (std::size_t index = 0; index < text.size(); index += 2) {
@@ -58,7 +58,7 @@ CursorCodec::CursorCodec(Clock clock) : clock_(std::move(clock)) {
         return std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
     };
-    if (RAND_bytes(key_.data(), key_.size()) != 1) throw ReadError(ReadErrorCode::unavailable);
+    if (RAND_bytes(key_.data(), key_.size()) != 1) throw OperationError(OperationErrorCode::unavailable);
 }
 
 std::string CursorCodec::signature(const std::string& binding, const std::string& payload) const {
@@ -67,7 +67,7 @@ std::string CursorCodec::signature(const std::string& binding, const std::string
     unsigned int size = 0;
     if (!HMAC(EVP_sha256(), key_.data(), key_.size(),
               reinterpret_cast<const unsigned char*>(input.data()), input.size(), digest, &size)) {
-        throw ReadError(ReadErrorCode::unavailable);
+        throw OperationError(OperationErrorCode::unavailable);
     }
     return std::string(reinterpret_cast<const char*>(digest), size);
 }
@@ -86,14 +86,14 @@ CursorPosition CursorCodec::decode(const std::string& binding, const std::string
     const auto payload = bytes.substr(0, 26);
     const auto expected = signature(binding, payload);
     if (CRYPTO_memcmp(expected.data(), bytes.data() + 26, expected.size()) != 0) {
-        throw ReadError(ReadErrorCode::invalid_cursor);
+        throw OperationError(OperationErrorCode::invalid_cursor);
     }
     const auto expires = number(payload, 1);
     const auto now = static_cast<std::uint64_t>(clock_());
     const auto from = number(payload, 17);
     if (payload[0] != 1 || expires <= now || expires > now + lifetime_seconds ||
         from > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()) ||
-        (payload[25] != 0 && payload[25] != 1)) throw ReadError(ReadErrorCode::invalid_cursor);
+        (payload[25] != 0 && payload[25] != 1)) throw OperationError(OperationErrorCode::invalid_cursor);
     return {number(payload, 9), static_cast<std::int64_t>(from), payload[25] != 0};
 }
 

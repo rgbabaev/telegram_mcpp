@@ -1,4 +1,5 @@
 #include "telegram_mcpp/tdlib_read.hpp"
+#include "telegram_mcpp/tdlib_draft.hpp"
 #include "telegram_mcpp/text.hpp"
 
 #include <cstdlib>
@@ -48,6 +49,29 @@ void request_mapping() {
     const auto& fields = static_cast<const api::getMessageLink&>(*link);
     require(fields.chat_id_ == INT64_MIN && fields.message_id_ == INT64_MAX && fields.media_timestamp_ == 0 &&
             fields.checklist_task_id_ == 0 && fields.poll_option_id_.empty() && !fields.for_album_ && !fields.in_message_thread_);
+}
+
+void draft_mapping() {
+    AccountRequest request{AccountCommand::set_draft, "private-draft: Привіт 👋\nДруга лінія"};
+    request.chat_id = INT64_MIN;
+    const auto function = make_tdlib_draft_function(request);
+    require(function->get_id() == api::setChatDraftMessage::ID);
+    const auto& draft = static_cast<const api::setChatDraftMessage&>(*function);
+    require(draft.chat_id_ == INT64_MIN && !draft.topic_id_ && draft.draft_message_);
+    require(!draft.draft_message_->reply_to_ && !draft.draft_message_->suggested_post_info_ && draft.draft_message_->effect_id_ == 0);
+    require(draft.draft_message_->content_ && draft.draft_message_->content_->get_id() == api::draftMessageContentText::ID);
+    const auto& content = static_cast<const api::draftMessageContentText&>(*draft.draft_message_->content_);
+    require(content.text_ && content.text_->text_ == request.secret && content.text_->entities_.empty() && !content.link_preview_options_);
+    request.secret.clear();
+    const auto cleared = make_tdlib_draft_function(request);
+    const auto& fields = static_cast<const api::setChatDraftMessage&>(*cleared);
+    require(fields.chat_id_ == INT64_MIN && !fields.topic_id_ && !fields.draft_message_);
+    require(!decode_tdlib_draft_result(api::ok()).error);
+    require(decode_tdlib_draft_result(api::chat()).error == AccountErrorCode::unavailable);
+    require(decode_tdlib_draft_result(api::message()).error == AccountErrorCode::unavailable);
+    request.command = AccountCommand::message;
+    try { make_tdlib_draft_function(request); require(false); }
+    catch (const AccountError& error) { require(error.code() == AccountErrorCode::invalid_input); }
 }
 
 void message_mapping() {
@@ -154,6 +178,7 @@ void error_mapping() {
         require(decode_tdlib_error(error, AccountCommand::message).error == AccountErrorCode::message_unavailable);
         require(decode_tdlib_error(error, AccountCommand::search_messages).error == AccountErrorCode::history_unavailable);
         require(decode_tdlib_error(error, AccountCommand::chat).error == AccountErrorCode::history_unavailable);
+        require(decode_tdlib_error(error, AccountCommand::set_draft).error == AccountErrorCode::draft_unavailable);
     }
     for (const auto& item : std::vector<std::pair<int, AccountErrorCode>>{
              {401, AccountErrorCode::unauthenticated}, {408, AccountErrorCode::timeout},
@@ -193,7 +218,7 @@ void response_mapping() {
 }
 
 int main() {
-    try { request_mapping(); message_mapping(); private_chat_mapping(); reaction_mapping(); response_mapping(); error_mapping(); }
+    try { request_mapping(); draft_mapping(); message_mapping(); private_chat_mapping(); reaction_mapping(); response_mapping(); error_mapping(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return EXIT_FAILURE; }
     return EXIT_SUCCESS;
 }

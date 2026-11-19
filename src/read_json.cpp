@@ -1,7 +1,13 @@
-#include "telegram_mcpp/read_operations.hpp"
+#include "telegram_mcpp/telegram_operations.hpp"
 #include "telegram_mcpp/text.hpp"
 
 namespace telegram_mcpp {
+
+std::string to_json(const DraftResult& draft) {
+    return "{\"chat_id\":" + json_string(draft.chat_id) +
+        ",\"status\":" + json_string(draft.cleared ? "cleared" : "saved") + "}";
+}
+
 namespace {
 
 std::string boolean(bool value) { return value ? "true" : "false"; }
@@ -75,7 +81,7 @@ std::string to_json(const MessagePage& page) {
     result += "],\"next_cursor\":" + cursor_json(page.next_cursor) +
         ",\"status\":" + json_string(status) + ",\"response_limited\":" + boolean(page.response_limited);
     if (page.error) {
-        result += ",\"error\":{\"code\":" + json_string(read_error_name(page.error->code));
+        result += ",\"error\":{\"code\":" + json_string(operation_error_name(page.error->code));
         if (page.error->retry_after > 0) result += ",\"retry_after_seconds\":" + std::to_string(page.error->retry_after);
         result += '}';
     }
