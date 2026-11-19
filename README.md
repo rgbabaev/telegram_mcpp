@@ -1,6 +1,6 @@
 # telegram_mcpp
 
-Read-only Telegram MCP server for one personal account. Implements steps 1–4: protected account access, allowlisted reads, and local stdio MCP. Live account acceptance checks require the owner’s saved session; see [the specification](docs/SPECIFICATION.md).
+Read-only Telegram MCP server for one personal account, with protected account access, chat allowlists, and local stdio MCP. See [the specification](docs/SPECIFICATION.md).
 
 ## Build
 
@@ -159,4 +159,4 @@ cmake -S . -B build-offline \
 cmake --build build-offline --target check -j1
 ```
 
-MCP tests exercise lifecycle, discovery, strict arguments, full-width IDs, pagination, structured output schemas, partial/failed searches, output budgets, cancellation, revocation, rate delays, timeouts, overload, broken pipes, backpressure, and SIGTERM with a simulated Telegram transport. TDLib-enabled lifecycle checks also verify that `mcp serve` respects ownership and refuses anonymous sessions without stdout traffic. The named client passes all three calls against the simulated transport; successful saved-account calls, login/2FA, and real idle/search resource figures remain owner-run acceptance checks.
+MCP tests exercise lifecycle, discovery, strict arguments, full-width IDs, pagination, structured output schemas, partial/failed searches, output budgets, cancellation, revocation, rate delays, timeouts, overload, broken pipes, backpressure, and SIGTERM with a simulated Telegram transport. TDLib-enabled lifecycle checks also verify that `mcp serve` respects ownership and refuses anonymous sessions without stdout traffic.
