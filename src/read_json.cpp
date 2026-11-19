@@ -9,6 +9,12 @@ std::string cursor_json(const std::optional<std::string>& cursor) {
     return cursor ? json_string(*cursor) : "null";
 }
 
+std::string sender_json(const std::optional<Sender>& sender) {
+    if (!sender) return "null";
+    return "{\"type\":" + json_string(sender->type == SenderType::user ? "user" : "chat") +
+        ",\"id\":" + json_string(std::to_string(sender->id)) + "}";
+}
+
 }
 
 std::string to_json(const Message& message) {
@@ -16,6 +22,8 @@ std::string to_json(const Message& message) {
         ",\"chat_title\":" + json_string(message.chat_title) +
         ",\"chat_title_truncated\":" + boolean(message.chat_title_truncated) +
         ",\"message_id\":" + json_string(message.message_id) +
+        ",\"sender\":" + sender_json(message.sender) +
+        ",\"is_outgoing\":" + boolean(message.is_outgoing) +
         ",\"timestamp\":" + json_string(message.timestamp) +
         ",\"text\":" + json_string(message.text) +
         ",\"content_type\":" + json_string(message.content_type) +
@@ -30,7 +38,8 @@ std::string to_json(const AllowedChatPage& page) {
         result += "{\"id\":" + json_string(std::to_string(chat.id)) +
             ",\"title\":" + json_string(chat.title) +
             ",\"type\":" + json_string(chat.type) +
-            ",\"title_truncated\":" + boolean(chat.title_truncated) + "}";
+            ",\"title_truncated\":" + boolean(chat.title_truncated) +
+            (chat.peer_user_id ? ",\"peer_user_id\":" + json_string(std::to_string(*chat.peer_user_id)) : "") + "}";
     }
     return result + "],\"next_cursor\":" + cursor_json(page.next_cursor) + "}";
 }

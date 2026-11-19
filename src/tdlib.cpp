@@ -1,7 +1,6 @@
 #include "telegram_mcpp/tdlib.hpp"
 #include "telegram_mcpp/private_storage.hpp"
 #include "telegram_mcpp/tdlib_read.hpp"
-#include "telegram_mcpp/text.hpp"
 
 #include <td/telegram/Client.h>
 #include <td/telegram/td_api.h>
@@ -50,17 +49,6 @@ AuthorizationUpdate authorization(const api::AuthorizationState& state) {
     default: update.state = Authorization::unsupported; break;
     }
     return update;
-}
-
-std::string chat_type(const api::ChatType& type) {
-    switch (type.get_id()) {
-    case api::chatTypePrivate::ID: return "private";
-    case api::chatTypeBasicGroup::ID: return "basic_group";
-    case api::chatTypeSupergroup::ID:
-        return static_cast<const api::chatTypeSupergroup&>(type).is_channel_ ? "channel" : "supergroup";
-    case api::chatTypeSecret::ID: return "secret";
-    default: return "unsupported";
-    }
 }
 
 class TdlibTransport final : public AccountTransport {
@@ -161,11 +149,7 @@ private:
         }
         case api::chats::ID: result.chat_ids = static_cast<const api::chats&>(object).chat_ids_; break;
         case api::chat::ID: {
-            const auto& chat = static_cast<const api::chat&>(object);
-            bool truncated = false;
-            auto title = bounded_utf8(chat.title_, 512, truncated);
-            result.chat = ChatSummary{chat.id_, std::move(title),
-                                     chat.type_ ? chat_type(*chat.type_) : "unsupported", truncated};
+            result.chat = decode_tdlib_chat(static_cast<const api::chat&>(object));
             break;
         }
         default: return decode_tdlib_read_result(object, command);

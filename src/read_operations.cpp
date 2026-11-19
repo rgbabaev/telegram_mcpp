@@ -27,6 +27,31 @@ std::int64_t identifier(const std::string& value, bool positive) {
     return result;
 }
 
+bool valid_sender(const Sender& sender) {
+    return (sender.type == SenderType::user && sender.id > 0) ||
+        (sender.type == SenderType::chat && sender.id != 0);
+}
+
+std::optional<Sender> sender_filter(const std::optional<SenderInput>& input) {
+    if (!input) return {};
+    if (input->type != "user" && input->type != "chat") throw ReadError(ReadErrorCode::invalid_input);
+    return Sender{input->type == "user" ? SenderType::user : SenderType::chat,
+                  identifier(input->id, input->type == "user")};
+}
+
+std::string search_query(const SearchMessagesInput& input) {
+    if (!input.query) {
+        if (!input.chat_id) throw ReadError(ReadErrorCode::invalid_input);
+        return {};
+    }
+    const auto& query = *input.query;
+    if (query.empty() || query.size() > 4096 || !valid_utf8(query) || query.find('\0') != std::string::npos ||
+        std::all_of(query.begin(), query.end(), [](unsigned char c) { return c == ' ' || (c >= 9 && c <= 13); })) {
+        throw ReadError(ReadErrorCode::invalid_input);
+    }
+    return query;
+}
+
 struct UtcTime {
     std::int64_t seconds;
     int nanoseconds = 0;
@@ -108,13 +133,16 @@ bool valid_link(const std::string& link) {
         });
 }
 
-void validate_batch(const AccountResult& batch, std::int64_t chat_id, std::int64_t from) {
+void validate_batch(const AccountResult& batch, std::int64_t chat_id, std::int64_t from,
+                    const std::optional<Sender>& sender) {
     if (batch.messages.size() > 100 || batch.next_from_message_id < 0) throw ReadError(ReadErrorCode::unavailable);
     auto previous = from;
     for (std::size_t index = 0; index < batch.messages.size(); ++index) {
         const auto& record = batch.messages[index];
         if (record.chat_id != chat_id || record.id <= 0 || record.date < 0 ||
-            (previous && record.id > previous) || (index && record.id == previous)) {
+            (previous && record.id > previous) || (index && record.id == previous) ||
+            (record.sender && !valid_sender(*record.sender)) ||
+            (sender && (!record.sender || !(*record.sender == *sender)))) {
             throw ReadError(ReadErrorCode::unavailable);
         }
         previous = record.id;
@@ -278,11 +306,15 @@ ChatSummary ReadOperations::chat(std::int64_t id, Operation& operation) {
     chat.title = bounded_utf8(chat.title, 512, chat.title_truncated);
     if (chat.type != "private" && chat.type != "basic_group" && chat.type != "supergroup" &&
         chat.type != "channel" && chat.type != "secret") chat.type = "unsupported";
+    if (chat.type == "private") {
+        if (!chat.peer_user_id || *chat.peer_user_id <= 0) throw ReadError(ReadErrorCode::unavailable);
+    } else chat.peer_user_id.reset();
     return chat;
 }
 
 Message ReadOperations::present(MessageRecord record, const ChatSummary& chat, Operation& operation) {
-    if (record.chat_id != chat.id || record.id <= 0 || record.date < 0) throw ReadError(ReadErrorCode::unavailable);
+    if (record.chat_id != chat.id || record.id <= 0 || record.date < 0 ||
+        (record.sender && !valid_sender(*record.sender))) throw ReadError(ReadErrorCode::unavailable);
     Message result;
     result.chat_id = std::to_string(record.chat_id);
     result.chat_title = chat.title;
@@ -292,6 +324,8 @@ Message ReadOperations::present(MessageRecord record, const ChatSummary& chat, O
     result.text_truncated = record.text_truncated;
     result.text = bounded_utf8(record.text, Limits::message_text_bytes, result.text_truncated);
     result.content_type = content_type(record.content_type);
+    result.sender = record.sender;
+    result.is_outgoing = record.is_outgoing;
     AccountRequest request{AccountCommand::message_link, {}};
     request.chat_id = record.chat_id;
     request.message_id = record.id;
@@ -351,11 +385,8 @@ Message ReadOperations::get_message(const std::string& chat_id, const std::strin
 
 MessagePage ReadOperations::search_messages(const SearchMessagesInput& input, const Cancelled& cancelled) {
     const auto limit = page_size(input.limit);
-    if (input.query.empty() || input.query.size() > 4096 || !valid_utf8(input.query) ||
-        input.query.find('\0') != std::string::npos ||
-        std::all_of(input.query.begin(), input.query.end(), [](unsigned char c) { return c == ' ' || (c >= 9 && c <= 13); })) {
-        throw ReadError(ReadErrorCode::invalid_input);
-    }
+    const auto query = search_query(input);
+    const auto sender = sender_filter(input.sender);
     const auto since = input.since ? std::optional<UtcTime>(timestamp(*input.since)) : std::nullopt;
     const auto until = input.until ? std::optional<UtcTime>(timestamp(*input.until)) : std::nullopt;
     if (since && until && *until < *since) throw ReadError(ReadErrorCode::invalid_input);
@@ -365,10 +396,11 @@ MessagePage ReadOperations::search_messages(const SearchMessagesInput& input, co
         require_allowed(id);
         scope = {id};
     }
-    const auto filters = binding("search_messages", limit, json_string(input.query) + ':' +
+    const auto filters = binding("search_messages", limit, json_string(query) + ':' +
         (input.chat_id ? *input.chat_id : "*") + ':' +
         (since ? std::to_string(since->seconds) + '.' + std::to_string(since->nanoseconds) : "*") + ':' +
-        (until ? std::to_string(until->seconds) + '.' + std::to_string(until->nanoseconds) : "*"));
+        (until ? std::to_string(until->seconds) + '.' + std::to_string(until->nanoseconds) : "*") + ':' +
+        (sender ? input.sender->type + ':' + std::to_string(sender->id) : "*"));
     auto position = input.cursor ? cursors_.decode(filters, *input.cursor) : CursorPosition{};
     if (position.skip_first && !position.from_message_id) {
         throw ReadError(ReadErrorCode::invalid_cursor);
@@ -403,13 +435,15 @@ MessagePage ReadOperations::search_messages(const SearchMessagesInput& input, co
            batches < maximum_search_batches && !page.response_limited) {
         try {
             const auto summary = chat(scope[position.chat_index], operation);
-            AccountRequest request{AccountCommand::search_messages, input.query};
+            if (sender && summary.type == "secret") throw ReadError(ReadErrorCode::history_unavailable);
+            AccountRequest request{AccountCommand::search_messages, query};
             request.chat_id = summary.id;
             request.message_id = position.from_message_id;
             request.limit = 100;
+            request.sender = sender;
             const auto batch = call(request, operation);
             ++batches;
-            validate_batch(batch, summary.id, request.message_id);
+            validate_batch(batch, summary.id, request.message_id, sender);
             const bool skip_first = position.skip_first;
             bool stopped = false;
             for (std::size_t index = 0; index < batch.messages.size(); ++index) {

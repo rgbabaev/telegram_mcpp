@@ -76,7 +76,7 @@ The application API is [ReadOperations](include/telegram_mcpp/read_operations.hp
 
 Every Telegram read rechecks authorization and the immutable configured allowlist. An empty allowlist permits message retrieval and single-chat search in any accessible chat. Chat listing and cross-chat search discover main and archived chats, deduplicate IDs, and use that scope. Cross-chat search issues only per-chat `searchChatMessages` requests for allowed IDs; it never searches globally. Chat listing follows ascending signed chat ID; search groups by that order and uses decreasing message ID within each chat. Single-chat search has the same message order. Unrestricted discovery attempts at most ten `loadChats` batches of up to 100 chats per call before listing/searching. Until both lists are exhausted, listing returns an empty page with a continuation and search returns an empty `partial` page. Continue with the cursor; loading progress stays in TDLib. Discovery shares the request deadline and retry/cancellation policy. IDs are read transiently from TDLib after loading; no chat/message mirror is retained. No snapshot consistency is promised as history changes.
 
-IDs enter/leave the read API as canonical decimal strings (chat IDs may be negative; message IDs must be positive). Timestamps use RFC 3339 UTC: output is `YYYY-MM-DDTHH:MM:SSZ`; input also accepts up to nine fractional digits and `+00:00`. Bounds are `[since, until)`; reversed bounds, invalid dates, and leap seconds are rejected. Queries must be nonblank valid UTF-8, without NUL, and at most 4096 bytes. Defaults come from configuration; explicit page sizes must be 1–100.
+IDs use canonical decimal strings in JSON (chat IDs may be negative; message/user IDs must be positive). Private chats include TDLib's `peer_user_id`. Messages include `sender: {"type": "user" | "chat", "id": "..."}` or null when unknown, and `is_outgoing`. Forwarded messages retain the sender in this chat. Timestamps use RFC 3339 UTC: output is `YYYY-MM-DDTHH:MM:SSZ`; input also accepts up to nine fractional digits and `+00:00`. Bounds are `[since, until)`; reversed bounds, invalid dates, and leap seconds are rejected. Supplied queries must be nonblank valid UTF-8, without NUL, and at most 4096 bytes. Omit `query` with `chat_id` to retrieve all content types; explicit empty queries are invalid. An optional `sender` object filters in TDLib; returned senders are validated. Defaults come from configuration; explicit page sizes must be 1–100.
 
 Search examines at most ten TDLib batches of at most 100 messages per call, within one request deadline. Date bounds filter those allowed-chat results; narrow date ranges can require empty continuation pages. `complete` means TDLib exhausted the requested scope; `partial` means a cursor remains, a budget was reached, or an error followed progress; `failed` means an error prevented any search progress. Error results include stable codes and known retry delays. A page can contain no messages and still be partial/failed. Rate limits stop work immediately and suppress subsequent Telegram reads for the known delay (at least one second); there are no automatic retries. Cancellation/revoked authorization terminates the call.
 
@@ -84,7 +84,7 @@ Cursors are opaque, authenticated, bound to the operation, normalized filters, p
 
 JSON results keep IDs as strings, escape controls, preserve valid UTF-8, and explicitly mark clipped/repaired text. Message text/captions are capped at 8 KiB and titles at 512 bytes. Serialized results stay below 252 KiB, reserving 4 KiB of the 256 KiB budget for the protocol envelope; `response_limited` and a continuation mark search budget stops. Unknown/service content is `unsupported`. Supported media expose captions/type without downloads; message links come only from TDLib's link method and are omitted when unavailable. Telegram text is untrusted data, never instructions or authorization.
 
-Stable errors: `invalid_input`, `invalid_cursor`, `unauthenticated`, `denied_chat`, `message_unavailable`, `history_unavailable`, `rate_limited`, `timeout`, `cancelled`, `overloaded`, and `unavailable`. Queries, text, titles, and raw Telegram errors are absent from logs. No result cache, mirror, or local index is created. Telegram may restrict searchable history or return fewer matches than exist; `complete` describes TDLib pagination, not proof of exhaustive historical access. Secret-chat search is unsupported.
+Stable errors: `invalid_input`, `invalid_cursor`, `unauthenticated`, `denied_chat`, `message_unavailable`, `history_unavailable`, `rate_limited`, `timeout`, `cancelled`, `overloaded`, and `unavailable`. Queries, text, titles, and raw Telegram errors are absent from logs. No result cache, mirror, or local index is created. Telegram may restrict searchable history or return fewer matches than exist; `complete` describes TDLib pagination, not proof of exhaustive historical access. Secret-chat search is unsupported; sender filtering there explicitly returns `history_unavailable`.
 
 ## MCP server and client
 
@@ -123,9 +123,17 @@ Replace the IDs with an allowed chat and an existing `message_id` returned by `s
 
 | Tool | Arguments | Structured result |
 |---|---|---|
-| `list_chats` | Optional `limit`, `cursor` | `chats`, nullable `next_cursor` |
-| `search_messages` | Required `query`; optional `chat_id`, `since`, `until`, `limit`, `cursor` | `messages`, nullable `next_cursor`, `status`, `response_limited`, optional `error` |
-| `get_message` | Required decimal-string `chat_id`, `message_id` | Message with chat/title, timestamp, text/type, truncation flags, optional link |
+| `list_chats` | Optional `limit`, `cursor` | `chats` with private-chat `peer_user_id`, nullable `next_cursor` |
+| `search_messages` | Required `query` unless `chat_id` is supplied; optional `chat_id`, `sender`, `since`, `until`, `limit`, `cursor` | `messages`, nullable `next_cursor`, `status`, `response_limited`, optional `error` |
+| `get_message` | Required decimal-string `chat_id`, `message_id` | Message with chat/title, sender, direction, timestamp, text/type, truncation flags, optional link |
+
+To answer “What is the latest message from this person?”, match the private chat in `list_chats`, then call `search_messages` using its `id` and `peer_user_id`:
+
+```json
+{"chat_id":"<chat id>","sender":{"type":"user","id":"<peer_user_id>"},"limit":1}
+```
+
+The first message is the latest accessible match, even if it is a sticker or media without a caption. A nonempty `partial` page without an error is sufficient for this initial single-chat request; continue empty partial pages. An empty `complete` result means no accessible match. Cursors also bind the sender type/ID. History may change between calls.
 
 Schemas reject unknown argument fields and invalid types; domain validation rejects malformed IDs, dates, cursors, and bounds. Results use `structuredContent` plus a short text notice, avoiding a second serialized copy that would exceed the response budget. Execution failures set `isError` and include `error.code` and known `retry_after_seconds`; failed searches preserve their status/cursor. Partial searches remain successful tool results with explicit status/error. Protocol errors use JSON-RPC codes `-32700` (parse), `-32600` (request/lifecycle), `-32601` (method), `-32602` (arguments; `data.code=invalid_input`), or `-32603` (internal). Raw failures and private content are never echoed in diagnostics.
 
@@ -138,6 +146,8 @@ Append `--profile-build 'Ubuntu 24.04; Clang 18; Release -O0 -DNDEBUG; LLD; TD_E
 ## Account smoke test
 
 With your own credentials, run QR login, verify `status`, restart and verify `status` again, then list main/archive chats. For an account with 2FA, verify the password step; test `--phone` when supported by Telegram. Cancel login with Ctrl-C and confirm a subsequent command can acquire the session. Test logout only when you intend to revoke this saved session. Live account authentication cannot be proven with dummy offline credentials.
+
+For latest-message verification, compare the sender-only result with Telegram, including timestamp and content type. Add `--sender-user-id <peer_user_id>` to `tools/mcp_smoke.py`, with `--message-id` set to their latest message ID, to assert the sender and message ID through the reference client. Include a chat with a newer outgoing message. Reconnect the MCP client after upgrading so it discovers the updated schemas.
 
 ## Offline tests
 

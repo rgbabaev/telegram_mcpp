@@ -36,6 +36,29 @@ struct Content {
     const api::formattedText* text = nullptr;
 };
 
+std::optional<Sender> sender(const api::MessageSender* value) {
+    if (!value) return {};
+    switch (value->get_id()) {
+    case api::messageSenderUser::ID:
+        return Sender{SenderType::user, static_cast<const api::messageSenderUser&>(*value).user_id_};
+    case api::messageSenderChat::ID:
+        return Sender{SenderType::chat, static_cast<const api::messageSenderChat&>(*value).chat_id_};
+    default: return {};
+    }
+}
+
+std::string chat_type(const api::ChatType* type) {
+    if (!type) return "unsupported";
+    switch (type->get_id()) {
+    case api::chatTypePrivate::ID: return "private";
+    case api::chatTypeBasicGroup::ID: return "basic_group";
+    case api::chatTypeSupergroup::ID:
+        return static_cast<const api::chatTypeSupergroup&>(*type).is_channel_ ? "channel" : "supergroup";
+    case api::chatTypeSecret::ID: return "secret";
+    default: return "unsupported";
+    }
+}
+
 Content content(const api::MessageContent& value) {
     switch (value.get_id()) {
     case api::messageText::ID: return {"text", static_cast<const api::messageText&>(value).text_.get()};
@@ -71,10 +94,23 @@ MessageRecord decode_tdlib_message(const td::td_api::message& message) {
     result.chat_id = message.chat_id_;
     result.id = message.id_;
     result.date = message.date_;
+    result.sender = sender(message.sender_id_.get());
+    result.is_outgoing = message.is_outgoing_;
     if (message.content_) {
         const auto decoded = content(*message.content_);
         result.content_type = decoded.type;
         if (decoded.text) result.text = bounded_utf8(decoded.text->text_, Limits::message_text_bytes, result.text_truncated);
+    }
+    return result;
+}
+
+ChatSummary decode_tdlib_chat(const td::td_api::chat& chat) {
+    ChatSummary result;
+    result.id = chat.id_;
+    result.title = bounded_utf8(chat.title_, 512, result.title_truncated);
+    result.type = chat_type(chat.type_.get());
+    if (result.type == "private") {
+        result.peer_user_id = static_cast<const api::chatTypePrivate&>(*chat.type_).user_id_;
     }
     return result;
 }
@@ -117,6 +153,13 @@ td::td_api::object_ptr<td::td_api::Function> make_tdlib_read_function(const Acco
         function->from_message_id_ = request.message_id;
         function->offset_ = 0;
         function->limit_ = request.limit;
+        if (request.sender) {
+            if (request.sender->type == SenderType::user) {
+                function->sender_id_ = api::make_object<api::messageSenderUser>(request.sender->id);
+            } else {
+                function->sender_id_ = api::make_object<api::messageSenderChat>(request.sender->id);
+            }
+        }
         return function;
     }
     case AccountCommand::message: return api::make_object<api::getMessage>(request.chat_id, request.message_id);

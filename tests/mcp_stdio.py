@@ -163,6 +163,37 @@ class ProtocolTests(unittest.TestCase):
         self.assert_tool_error(client.call("search_messages", arguments), "invalid_cursor")
         self.assert_tool_error(client.call("search_messages", {"query": "x", "since": "2025-01-01T00:00:00Z", "until": "2024-01-01T00:00:00Z"}), "invalid_input")
 
+    def test_latest_message_from_private_peer(self):
+        client = self.client("latest")
+        chat = client.call("list_chats", {"limit": 1})["result"]["structuredContent"]["chats"][0]
+        self.assertEqual(chat["title"], "Євгенія Олександрівна ❤️")
+        self.assertEqual(chat["peer_user_id"], MAX_ID)
+        self.assertNotEqual(chat["id"], chat["peer_user_id"])
+        arguments = {"chat_id": chat["id"], "sender": {"type": "user", "id": chat["peer_user_id"]}, "limit": 1}
+        page = client.call("search_messages", arguments)["result"]["structuredContent"]
+        latest = page["messages"][0]
+        self.assertEqual(latest["message_id"], "2")
+        self.assertEqual(latest["sender"], arguments["sender"])
+        self.assertFalse(latest["is_outgoing"])
+        self.assertEqual((latest["content_type"], latest["text"]), ("sticker", ""))
+        self.assertEqual(latest["timestamp"], "2024-01-01T00:00:00Z")
+        self.assertEqual(client.call("get_message", {"chat_id": chat["id"], "message_id": "2"})["result"]["structuredContent"], latest)
+        arguments["cursor"] = page["next_cursor"]
+        resumed = client.call("search_messages", arguments)["result"]["structuredContent"]
+        self.assertEqual(resumed["messages"][0]["message_id"], "1")
+        self.assertEqual(resumed["status"], "complete")
+        arguments["sender"]["id"] = "500"
+        self.assert_tool_error(client.call("search_messages", arguments), "invalid_cursor")
+        arguments.pop("cursor")
+        arguments.pop("sender")
+        newest = client.call("search_messages", arguments)["result"]["structuredContent"]["messages"][0]
+        self.assertTrue(newest["is_outgoing"])
+        self.assertEqual(newest["message_id"], "3")
+        arguments["sender"] = {"type": "user", "id": "999"}
+        absent = client.call("search_messages", arguments)["result"]["structuredContent"]
+        self.assertEqual((absent["messages"], absent["status"], absent["next_cursor"]), ([], "complete", None))
+        self.assert_tool_error(client.call("search_messages", {"chat_id": "42"}), "denied_chat")
+
     def test_explicit_allowlist_and_empty_unrestricted(self):
         client = self.client()
         for name, arguments in (("get_message", {"chat_id": "42", "message_id": "1"}),
@@ -188,6 +219,10 @@ class ProtocolTests(unittest.TestCase):
                    ("list_chats", {"limit": 1.0}), ("list_chats", {"limit": 0}),
                    ("list_chats", {"limit": 101}), ("list_chats", {"cursor": None}),
                    ("search_messages", {}), ("search_messages", {"query": 1}),
+                   ("search_messages", {"chat_id": MIN_ID, "sender": None}),
+                   ("search_messages", {"chat_id": MIN_ID, "sender": {"type": "user"}}),
+                   ("search_messages", {"chat_id": MIN_ID, "sender": {"type": "user", "id": 1}}),
+                   ("search_messages", {"chat_id": MIN_ID, "sender": {"type": "user", "id": "1", "extra": 1}}),
                    ("get_message", {"chat_id": 1, "message_id": "2"}),
                    ("get_message", {"chat_id": MIN_ID}), ("execute", {}), ("list_chats", [])]
         for name, arguments in invalid:
@@ -198,6 +233,11 @@ class ProtocolTests(unittest.TestCase):
             self.assert_tool_error(client.call("get_message", {"chat_id": value, "message_id": "2"}), "invalid_input")
         for value in ("", " \n", "a\x00b", "x" * 4097):
             self.assert_tool_error(client.call("search_messages", {"query": value}), "invalid_input")
+            self.assert_tool_error(client.call("search_messages", {"chat_id": MIN_ID, "query": value}), "invalid_input")
+        for sender in ({"type": "user", "id": "-1"}, {"type": "chat", "id": "0"},
+                       {"type": "user", "id": "01"}, {"type": "bot", "id": "1"},
+                       {"type": "user", "id": "9223372036854775808"}):
+            self.assert_tool_error(client.call("search_messages", {"chat_id": MIN_ID, "sender": sender}), "invalid_input")
         self.assert_tool_error(client.call("list_chats", {"cursor": "x" * 117}), "invalid_cursor")
 
     def test_malformed_frames_and_recovery(self):

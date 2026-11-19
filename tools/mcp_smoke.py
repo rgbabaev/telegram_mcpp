@@ -34,6 +34,9 @@ async def smoke(arguments):
                 ("search_messages", {"query": arguments.query, "chat_id": arguments.chat_id, "limit": 1}),
                 ("get_message", {"chat_id": arguments.chat_id, "message_id": arguments.message_id}),
             ]
+            if arguments.sender_user_id:
+                calls.append(("search_messages", {"chat_id": arguments.chat_id,
+                    "sender": {"type": "user", "id": arguments.sender_user_id}, "limit": 1}))
             for name, inputs in calls:
                 tool = tools[name]
                 Draft202012Validator.check_schema(tool.inputSchema)
@@ -49,6 +52,11 @@ async def smoke(arguments):
                     raise RuntimeError(name + " failed: " + result.structuredContent["error"]["code"])
                 if name == "search_messages" and result.structuredContent.get("error"):
                     raise RuntimeError("Search was incomplete with an error")
+                if "sender" in inputs:
+                    messages = result.structuredContent["messages"]
+                    assert len(messages) == 1
+                    assert messages[0]["sender"] == inputs["sender"]
+                    assert messages[0]["message_id"] == arguments.message_id
                 print(name + ": passed", flush=True)
 
 
@@ -59,6 +67,7 @@ def main():
     parser.add_argument("--chat-id", required=True)
     parser.add_argument("--message-id", required=True)
     parser.add_argument("--query", required=True)
+    parser.add_argument("--sender-user-id", help="Also verify a sender-only search; --message-id must be their latest message")
     parser.add_argument("--profile-build", help="Record idle/search Linux RSS and CPU; supply exact build settings")
     parser.add_argument("--fixture", help=argparse.SUPPRESS)
     arguments = parser.parse_args()

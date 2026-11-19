@@ -68,6 +68,8 @@ private:
 struct Backend {
     std::map<std::int64_t, std::vector<MessageRecord>> history;
     std::string title = "private-title";
+    std::string type = "channel";
+    std::optional<std::int64_t> peer_user_id;
     std::optional<std::string> link;
     int batch_size = 100;
     bool exclusive = false;
@@ -81,7 +83,7 @@ struct Backend {
         } else if (request.command == AccountCommand::chat_ids) {
             result.chat_ids = request.archive ? archive_chats : main_chats;
         } else if (request.command == AccountCommand::chat) {
-            result.chat = ChatSummary{request.chat_id, title, "channel", false};
+            result.chat = ChatSummary{request.chat_id, title, type, false, peer_user_id};
         } else if (request.command == AccountCommand::message_link) {
             result.link = link;
             if (!link) result.error = AccountErrorCode::message_unavailable;
@@ -92,11 +94,13 @@ struct Backend {
             }
             if (!result.message) result.error = AccountErrorCode::message_unavailable;
         } else if (request.command == AccountCommand::search_messages) {
-            require(request.limit > 0 && request.limit <= 100 && request.secret == "private-query");
+            require(request.limit > 0 && request.limit <= 100 &&
+                    (request.secret == "private-query" || request.secret.empty()));
             const auto found = history.find(request.chat_id);
             if (found == history.end()) return result;
             for (const auto& message : found->second) {
                 if (request.message_id && (message.id > request.message_id || (exclusive && message.id == request.message_id))) continue;
+                if (request.sender && (!message.sender || !(*message.sender == *request.sender))) continue;
                 if (result.messages.size() == static_cast<std::size_t>(std::min(request.limit, batch_size))) {
                     result.next_from_message_id = message.id;
                     break;
@@ -198,6 +202,136 @@ void empty_allowlist_grants_all_chats() {
     require(fixture.reads->get_message("42", "11").chat_id == "42");
     input = search(); input.chat_id = "42";
     require(fixture.reads->search_messages(input).messages.size() == 1);
+}
+
+void latest_message_from_private_peer() {
+    for (const auto* type : {"text", "sticker", "photo", "voice_note", "unsupported"}) {
+        Backend backend;
+        backend.type = "private";
+        backend.peer_user_id = INT64_MAX;
+        auto outgoing = message(1, 30);
+        outgoing.sender = Sender{SenderType::user, 500};
+        outgoing.is_outgoing = true;
+        auto incoming = message(1, 20, 1704067201, std::string(type) == "text" ? "private-text" : "");
+        incoming.sender = Sender{SenderType::user, INT64_MAX};
+        incoming.content_type = type;
+        auto older = incoming;
+        older.id = 10;
+        backend.history[1] = {outgoing, incoming, older};
+        Fixture fixture(configuration({1}), backend);
+        const auto chats = fixture.reads->list_chats({});
+        require(chats.chats[0].peer_user_id == INT64_MAX);
+        require(to_json(chats).find("\"peer_user_id\":\"9223372036854775807\"") != std::string::npos);
+        SearchMessagesInput input;
+        input.chat_id = "1";
+        input.sender = SenderInput{"user", std::to_string(*chats.chats[0].peer_user_id)};
+        input.limit = 1;
+        const auto page = fixture.reads->search_messages(input);
+        require(!page.error && page.messages.size() == 1 && page.messages[0].message_id == "20");
+        require(page.status == SearchStatus::partial && page.next_cursor);
+        const auto& latest = page.messages[0];
+        require(latest.sender == incoming.sender && !latest.is_outgoing && latest.content_type == type);
+        require(latest.timestamp == "2024-01-01T00:00:01Z");
+        require(to_json(latest).find("\"sender\":{\"type\":\"user\",\"id\":\"9223372036854775807\"}") != std::string::npos);
+        input.cursor = page.next_cursor;
+        const auto next = fixture.reads->search_messages(input);
+        require(!next.error && next.messages.size() == 1 && next.messages[0].message_id == "10");
+        input.cursor.reset();
+        input.sender.reset();
+        const auto all = fixture.reads->search_messages(input);
+        require(all.messages[0].message_id == "30" && all.messages[0].is_outgoing);
+        const auto retrieved = fixture.reads->get_message("1", "20");
+        require(retrieved.sender == incoming.sender && !retrieved.is_outgoing);
+        for (const auto& request : fixture.fake->requests()) {
+            require(request.chat_id == 1);
+            if (request.command == AccountCommand::search_messages) require(request.secret.empty());
+        }
+    }
+}
+
+void sender_validation_and_cursor_binding() {
+    Backend backend;
+    auto record = message(1, 30);
+    record.sender = Sender{SenderType::chat, INT64_MIN};
+    backend.history[1] = {record, message(1, 20)};
+    Fixture fixture(configuration({1}), backend);
+    auto input = search(1);
+    input.chat_id = "1";
+    const auto first = fixture.reads->search_messages(input);
+    require(first.messages[0].sender == record.sender);
+    require(to_json(first.messages[0]).find("\"id\":\"-9223372036854775808\"") != std::string::npos);
+    input.cursor = first.next_cursor;
+    input.sender = SenderInput{"chat", std::to_string(INT64_MIN)};
+    fails(ReadErrorCode::invalid_cursor, [&] { fixture.reads->search_messages(input); });
+    input.cursor.reset();
+    const auto filtered = fixture.reads->search_messages(input);
+    require(!filtered.error && filtered.messages.size() == 1);
+    input.sender = SenderInput{"user", "400"};
+    const auto absent = fixture.reads->search_messages(input);
+    require(absent.status == SearchStatus::complete && absent.messages.empty() && !absent.next_cursor);
+    for (const auto& sender : {SenderInput{"user", "0"}, SenderInput{"user", "-1"}, SenderInput{"chat", "01"},
+                               SenderInput{"user", "9223372036854775808"}, SenderInput{"unknown", "1"}}) {
+        input.sender = sender;
+        fails(ReadErrorCode::invalid_input, [&] { fixture.reads->search_messages(input); });
+    }
+    input.sender = SenderInput{"chat", std::to_string(INT64_MIN)};
+    input.query.reset();
+    input.chat_id = "2";
+    fails(ReadErrorCode::denied_chat, [&] { fixture.reads->search_messages(input); });
+    input.chat_id.reset();
+    fails(ReadErrorCode::invalid_input, [&] { fixture.reads->search_messages(input); });
+    input.chat_id = "1";
+    input.query = "";
+    fails(ReadErrorCode::invalid_input, [&] { fixture.reads->search_messages(input); });
+
+    for (const auto type : {SenderType::user, SenderType::chat}) {
+        Backend multiple;
+        record.sender = Sender{type, 400};
+        auto older = record; older.id = 20;
+        multiple.history[1] = {record, older};
+        Fixture bound(configuration({1}), multiple);
+        SearchMessagesInput criteria;
+        criteria.chat_id = "1";
+        criteria.limit = 1;
+        criteria.sender = SenderInput{type == SenderType::user ? "user" : "chat", "400"};
+        criteria.cursor = bound.reads->search_messages(criteria).next_cursor;
+        require(criteria.cursor.has_value());
+        criteria.sender->id = "401";
+        fails(ReadErrorCode::invalid_cursor, [&] { bound.reads->search_messages(criteria); });
+        criteria.sender->id = "400";
+        criteria.sender->type = type == SenderType::user ? "chat" : "user";
+        fails(ReadErrorCode::invalid_cursor, [&] { bound.reads->search_messages(criteria); });
+        criteria.sender.reset();
+        fails(ReadErrorCode::invalid_cursor, [&] { bound.reads->search_messages(criteria); });
+    }
+}
+
+void sender_results_fail_closed() {
+    Backend backend;
+    backend.history[1] = {message(1, 10)};
+    for (const auto& sender : {std::optional<Sender>{}, std::optional<Sender>{Sender{SenderType::user, 2}},
+                              std::optional<Sender>{Sender{SenderType::user, 0}}}) {
+        backend.history[1][0].sender = sender;
+        SearchMessagesInput input;
+        input.chat_id = "1";
+        input.sender = SenderInput{"user", "1"};
+        Fixture invalid(configuration({1}), [&](const auto& request) {
+            auto unfiltered = request;
+            unfiltered.sender.reset();
+            return backend(unfiltered);
+        });
+        const auto page = invalid.reads->search_messages(input);
+        require(page.status == SearchStatus::failed && page.messages.empty() && page.error && page.next_cursor);
+        require(page.error->code == ReadErrorCode::unavailable);
+    }
+    backend.type = "secret";
+    Fixture secret(configuration({1}), backend);
+    SearchMessagesInput input;
+    input.chat_id = "1";
+    input.sender = SenderInput{"user", "1"};
+    const auto page = secret.reads->search_messages(input);
+    require(page.status == SearchStatus::failed && page.error->code == ReadErrorCode::history_unavailable);
+    for (const auto& request : secret.fake->requests()) require(request.command == AccountCommand::chat);
 }
 
 void unrestricted_discovery_is_bounded_and_resumable() {
@@ -357,8 +491,12 @@ void dates_are_half_open_and_strict() {
 void bounded_empty_search_is_partial() {
     Backend backend;
     for (int index = 1100; index > 0; --index) backend.history[1].push_back(message(1, index));
+    for (auto& record : backend.history[1]) record.sender = Sender{SenderType::user, 400};
     Fixture fixture(configuration({1}), backend);
     auto input = search();
+    input.query.reset();
+    input.chat_id = "1";
+    input.sender = SenderInput{"user", "400"};
     input.since = "2030-01-01T00:00:00Z";
     const auto page = fixture.reads->search_messages(input);
     require(page.messages.empty() && page.status == SearchStatus::partial && page.next_cursor && !page.error);
@@ -561,6 +699,9 @@ int main(int argc, char** argv) {
     const std::vector<std::pair<const char*, std::function<void()>>> tests{
         {"explicit allowlist and validation", explicit_allowlist_and_validation},
         {"empty allowlist grants all chats", empty_allowlist_grants_all_chats},
+        {"latest private-peer message", latest_message_from_private_peer},
+        {"sender validation and cursor binding", sender_validation_and_cursor_binding},
+        {"sender results fail closed", sender_results_fail_closed},
         {"bounded unrestricted discovery", unrestricted_discovery_is_bounded_and_resumable},
         {"allowed chat pages and ID precision", allowlisted_chat_pagination_and_precision},
         {"cursor binding and expiry", opaque_cursors_bind_scope_and_expire},

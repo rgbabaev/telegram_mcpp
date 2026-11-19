@@ -31,13 +31,18 @@ struct ListChatsInput {
     std::optional<int> limit;
     std::optional<std::string> cursor;
 };
+struct SenderInput {
+    std::string type;
+    std::string id;
+};
 struct SearchMessagesInput {
-    std::string query;
+    std::optional<std::string> query;
     std::optional<std::string> chat_id;
     std::optional<std::string> since;
     std::optional<std::string> until;
     std::optional<int> limit;
     std::optional<std::string> cursor;
+    std::optional<SenderInput> sender = {};
 };
 struct Message {
     std::string chat_id;
@@ -49,6 +54,8 @@ struct Message {
     std::string content_type;
     bool text_truncated = false;
     std::optional<std::string> link;
+    std::optional<Sender> sender = {};
+    bool is_outgoing = false;
 };
 struct AllowedChatPage {
     std::vector<ChatSummary> chats;
