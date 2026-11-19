@@ -56,6 +56,7 @@ struct Message {
     std::optional<std::string> link;
     std::optional<Sender> sender = {};
     bool is_outgoing = false;
+    std::optional<MessageReactions> reactions = {};
 };
 struct AllowedChatPage {
     std::vector<ChatSummary> chats;

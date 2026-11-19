@@ -16,6 +16,8 @@ struct Limits {
     static constexpr int maximum_page_size = 100;
     static constexpr std::size_t response_bytes = 256 * 1024;
     static constexpr std::size_t message_text_bytes = 8 * 1024;
+    static constexpr std::size_t maximum_reaction_types = 100;
+    static constexpr std::size_t reaction_emoji_bytes = 64;
 };
 
 struct Config {

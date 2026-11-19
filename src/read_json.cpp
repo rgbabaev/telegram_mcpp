@@ -15,6 +15,25 @@ std::string sender_json(const std::optional<Sender>& sender) {
         ",\"id\":" + json_string(std::to_string(sender->id)) + "}";
 }
 
+std::string reaction_json(const Reaction& reaction) {
+    return "{\"type\":" + json_string(reaction.type) +
+        ",\"total_count\":" + std::to_string(reaction.total_count) +
+        ",\"is_chosen\":" + boolean(reaction.is_chosen) +
+        (reaction.type == "emoji" ? ",\"emoji\":" + json_string(reaction.emoji) : "") +
+        (reaction.type == "custom_emoji" ? ",\"custom_emoji_id\":" + json_string(std::to_string(reaction.custom_emoji_id)) : "") + "}";
+}
+
+std::string reactions_json(const std::optional<MessageReactions>& reactions) {
+    if (!reactions) return "null";
+    std::string result = "{\"items\":[";
+    for (const auto& reaction : reactions->items) {
+        if (result.back() != '[') result += ',';
+        result += reaction_json(reaction);
+    }
+    return result + "],\"are_tags\":" + boolean(reactions->are_tags) +
+        ",\"truncated\":" + boolean(reactions->truncated) + "}";
+}
+
 }
 
 std::string to_json(const Message& message) {
@@ -24,6 +43,7 @@ std::string to_json(const Message& message) {
         ",\"message_id\":" + json_string(message.message_id) +
         ",\"sender\":" + sender_json(message.sender) +
         ",\"is_outgoing\":" + boolean(message.is_outgoing) +
+        ",\"reactions\":" + reactions_json(message.reactions) +
         ",\"timestamp\":" + json_string(message.timestamp) +
         ",\"text\":" + json_string(message.text) +
         ",\"content_type\":" + json_string(message.content_type) +

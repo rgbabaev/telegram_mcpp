@@ -77,6 +77,17 @@ private:
         result.sender = Sender{mode_ == "maximal" ? SenderType::chat : SenderType::user,
                                mode_ == "maximal" ? INT64_MIN : INT64_MAX};
         if (mode_ == "unknown-sender") result.sender.reset();
+        if (mode_ == "reactions") {
+            result.reactions = MessageReactions{{
+                {"emoji", "❤️", 0, 2, false}, {"custom_emoji", {}, INT64_MAX, 1, true},
+                {"custom_emoji", {}, INT64_MIN, 1, false}, {"paid", {}, 0, 3, true},
+                {"unsupported", {}, 0, 4, false}}, false, false};
+        }
+        if (mode_ == "empty-reactions") result.reactions = MessageReactions{};
+        if (mode_ == "maximal" || mode_ == "truncated-reactions") {
+            result.reactions = MessageReactions{};
+            result.reactions->items.resize(101, Reaction{"emoji", std::string(65, '\x01'), 0, INT32_MAX, true});
+        }
         if (mode_ == "latest") {
             result.is_outgoing = id == 3;
             result.sender = Sender{SenderType::user, result.is_outgoing ? 500 : INT64_MAX};

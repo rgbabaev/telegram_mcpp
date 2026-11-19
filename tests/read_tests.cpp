@@ -334,6 +334,55 @@ void sender_results_fail_closed() {
     for (const auto& request : secret.fake->requests()) require(request.command == AccountCommand::chat);
 }
 
+void message_reaction_summaries() {
+    Backend backend;
+    backend.history[1] = {message(1, 10)};
+    Fixture unknown(configuration({1}), backend);
+    require(!unknown.reads->get_message("1", "10").reactions);
+    require(to_json(unknown.reads->get_message("1", "10")).find("\"reactions\":null") != std::string::npos);
+    backend.history[1][0].reactions = MessageReactions{};
+    Fixture empty(configuration({1}), backend);
+    const auto no_reactions = empty.reads->get_message("1", "10");
+    require(no_reactions.reactions && no_reactions.reactions->items.empty());
+    require(to_json(no_reactions).find("\"reactions\":{\"items\":[],\"are_tags\":false,\"truncated\":false}") != std::string::npos);
+    backend.history[1][0].reactions = MessageReactions{{
+        {"emoji", "❤️", 0, 2, true}, {"custom_emoji", {}, INT64_MAX, 3, false},
+        {"custom_emoji", {}, INT64_MIN, 4, false}, {"paid", {}, 0, 5, false},
+        {"future-type", {}, 0, 6, false}}, true, false};
+    Fixture fixture(configuration({1}), backend);
+    const auto result = fixture.reads->get_message("1", "10");
+    require(result.reactions && result.reactions->items.size() == 5 && result.reactions->are_tags && !result.reactions->truncated);
+    require(result.reactions->items[0].emoji == "❤️" && result.reactions->items[0].total_count == 2 && result.reactions->items[0].is_chosen);
+    require(result.reactions->items[4].type == "unsupported");
+    const auto json = to_json(result);
+    require(json.find("\"custom_emoji_id\":\"9223372036854775807\"") != std::string::npos);
+    require(json.find("\"custom_emoji_id\":\"-9223372036854775808\"") != std::string::npos);
+    SearchMessagesInput input;
+    input.chat_id = "1";
+    const auto found = fixture.reads->search_messages(input);
+    require(found.messages.size() == 1 && to_json(found.messages[0]) == json);
+    for (const auto& invalid : {Reaction{"emoji", "❤️", 0, -1, false}, Reaction{"custom_emoji", {}, 0, 1, false}}) {
+        backend.history[1][0].reactions = MessageReactions{{invalid}, false, false};
+        Fixture malformed(configuration({1}), backend);
+        fails(ReadErrorCode::unavailable, [&] { malformed.reads->get_message("1", "10"); });
+        const auto failure = malformed.reads->search_messages(input);
+        require(failure.status == SearchStatus::failed && failure.messages.empty() && failure.error);
+    }
+}
+
+void reaction_limits_preserve_utf8_and_size() {
+    Backend backend;
+    auto record = message(1, 10, 1704067200, std::string(9000, '\1'));
+    record.reactions = MessageReactions{};
+    record.reactions->items.resize(101, Reaction{"emoji", std::string(63, 'x') + "❤️", 0, 1, false});
+    backend.history[1] = {record};
+    Fixture fixture(configuration({1}), backend);
+    const auto result = fixture.reads->get_message("1", "10");
+    require(result.reactions && result.reactions->items.size() == Limits::maximum_reaction_types && result.reactions->truncated);
+    require(result.reactions->items[0].emoji.size() == 63 && valid_utf8(result.reactions->items[0].emoji));
+    require(to_json(result).size() < Limits::response_bytes - 4096);
+}
+
 void unrestricted_discovery_is_bounded_and_resumable() {
     Backend backend;
     backend.main_chats = {1}; backend.archive_chats = {2};
@@ -512,6 +561,10 @@ MessagePage large_page() {
     Backend backend;
     backend.title = "\"\n\x1b" + std::string(600, 'x');
     for (int index = 100; index > 0; --index) backend.history[1].push_back(message(1, index, 1704067200, std::string(9000, '\1')));
+    for (auto& record : backend.history[1]) {
+        record.reactions = MessageReactions{};
+        record.reactions->items.resize(100, Reaction{"emoji", std::string(64, '\1'), 0, INT32_MAX, true});
+    }
     Fixture fixture(configuration({1}), backend);
     auto input = search(100);
     const auto page = fixture.reads->search_messages(input);
@@ -702,6 +755,8 @@ int main(int argc, char** argv) {
         {"latest private-peer message", latest_message_from_private_peer},
         {"sender validation and cursor binding", sender_validation_and_cursor_binding},
         {"sender results fail closed", sender_results_fail_closed},
+        {"message reaction summaries", message_reaction_summaries},
+        {"reaction limits", reaction_limits_preserve_utf8_and_size},
         {"bounded unrestricted discovery", unrestricted_discovery_is_bounded_and_resumable},
         {"allowed chat pages and ID precision", allowlisted_chat_pagination_and_precision},
         {"cursor binding and expiry", opaque_cursors_bind_scope_and_expire},

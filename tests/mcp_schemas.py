@@ -3,7 +3,8 @@ from mcp_stdio import Client, MIN_ID, MAX_ID
 
 
 def validate_schemas():
-    for mode in ("normal", "empty", "partial", "rate", "unavailable", "maximal", "revoked", "latest", "unknown-sender"):
+    for mode in ("normal", "empty", "partial", "rate", "unavailable", "maximal", "revoked", "latest", "unknown-sender",
+                 "reactions", "empty-reactions", "truncated-reactions"):
         client = Client(mode)
         try:
             client.initialize()
@@ -39,6 +40,16 @@ def validate_schemas():
                            ("search_messages", {"chat_id": MIN_ID, "sender": {"type": "chat", "id": MIN_ID, "extra": 1}})]
                 for name, arguments in invalid:
                     assert not Draft202012Validator(tools[name]["inputSchema"]).is_valid(arguments)
+            if mode == "reactions":
+                message = client.call("get_message", {"chat_id": MIN_ID, "message_id": MAX_ID})["result"]["structuredContent"]
+                schema = Draft202012Validator(tools["get_message"]["outputSchema"])
+                for item in ({"type": "emoji", "emoji": "❤️", "total_count": -1, "is_chosen": False},
+                             {"type": "custom_emoji", "custom_emoji_id": 123, "total_count": 1, "is_chosen": False},
+                             {"type": "paid", "emoji": "❤️", "total_count": 1, "is_chosen": False},
+                             {"type": "emoji", "emoji": "❤️", "total_count": 1},
+                             {"type": "unknown", "total_count": 1, "is_chosen": False}):
+                    message["reactions"]["items"] = [item]
+                    assert not schema.is_valid(message)
         finally:
             client.close()
 

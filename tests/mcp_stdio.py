@@ -194,6 +194,30 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual((absent["messages"], absent["status"], absent["next_cursor"]), ([], "complete", None))
         self.assert_tool_error(client.call("search_messages", {"chat_id": "42"}), "denied_chat")
 
+    def test_message_reaction_summaries(self):
+        client = self.client("reactions")
+        message = client.call("get_message", {"chat_id": MIN_ID, "message_id": MAX_ID})["result"]["structuredContent"]
+        reactions = message["reactions"]
+        self.assertEqual(reactions, {"items": [
+            {"type": "emoji", "emoji": "❤️", "total_count": 2, "is_chosen": False},
+            {"type": "custom_emoji", "custom_emoji_id": MAX_ID, "total_count": 1, "is_chosen": True},
+            {"type": "custom_emoji", "custom_emoji_id": MIN_ID, "total_count": 1, "is_chosen": False},
+            {"type": "paid", "total_count": 3, "is_chosen": True},
+            {"type": "unsupported", "total_count": 4, "is_chosen": False}], "are_tags": False, "truncated": False})
+        found = client.call("search_messages", {"chat_id": MIN_ID, "limit": 1})["result"]["structuredContent"]
+        self.assertEqual(found["messages"][0]["reactions"], reactions)
+        empty = self.client("empty-reactions")
+        message = empty.call("get_message", {"chat_id": MIN_ID, "message_id": MAX_ID})["result"]["structuredContent"]
+        self.assertEqual(message["reactions"], {"items": [], "are_tags": False, "truncated": False})
+        unknown = self.client()
+        message = unknown.call("get_message", {"chat_id": MIN_ID, "message_id": MAX_ID})["result"]["structuredContent"]
+        self.assertIsNone(message["reactions"])
+        truncated = self.client("truncated-reactions")
+        message = truncated.call("get_message", {"chat_id": MIN_ID, "message_id": MAX_ID})["result"]["structuredContent"]
+        self.assertTrue(message["reactions"]["truncated"])
+        self.assertEqual(len(message["reactions"]["items"]), 100)
+        self.assertEqual(message["reactions"]["items"][0]["emoji"], "\x01" * 64)
+
     def test_explicit_allowlist_and_empty_unrestricted(self):
         client = self.client()
         for name, arguments in (("get_message", {"chat_id": "42", "message_id": "1"}),

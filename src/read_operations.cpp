@@ -52,6 +52,23 @@ std::string search_query(const SearchMessagesInput& input) {
     return query;
 }
 
+std::optional<MessageReactions> bounded_reactions(std::optional<MessageReactions> reactions) {
+    if (!reactions) return {};
+    if (reactions->items.size() > Limits::maximum_reaction_types) {
+        reactions->items.resize(Limits::maximum_reaction_types);
+        reactions->truncated = true;
+    }
+    for (auto& reaction : reactions->items) {
+        if (reaction.total_count < 0 || (reaction.type == "custom_emoji" && !reaction.custom_emoji_id)) {
+            throw ReadError(ReadErrorCode::unavailable);
+        }
+        if (reaction.type == "emoji") {
+            reaction.emoji = bounded_utf8(reaction.emoji, Limits::reaction_emoji_bytes, reactions->truncated);
+        } else if (reaction.type != "custom_emoji" && reaction.type != "paid") reaction.type = "unsupported";
+    }
+    return reactions;
+}
+
 struct UtcTime {
     std::int64_t seconds;
     int nanoseconds = 0;
@@ -326,6 +343,7 @@ Message ReadOperations::present(MessageRecord record, const ChatSummary& chat, O
     result.content_type = content_type(record.content_type);
     result.sender = record.sender;
     result.is_outgoing = record.is_outgoing;
+    result.reactions = bounded_reactions(std::move(record.reactions));
     AccountRequest request{AccountCommand::message_link, {}};
     request.chat_id = record.chat_id;
     request.message_id = record.id;

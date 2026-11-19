@@ -105,6 +105,49 @@ void private_chat_mapping() {
     require(!decode_tdlib_chat(chat).peer_user_id && decode_tdlib_chat(chat).type == "unsupported");
 }
 
+api::object_ptr<api::messageReaction> reaction(api::object_ptr<api::ReactionType> type, int count, bool chosen = false) {
+    auto result = api::make_object<api::messageReaction>();
+    result->type_ = std::move(type);
+    result->total_count_ = count;
+    result->is_chosen_ = chosen;
+    return result;
+}
+
+void reaction_mapping() {
+    api::message message;
+    require(!decode_tdlib_message(message).reactions);
+    message.interaction_info_ = api::make_object<api::messageInteractionInfo>();
+    require(!decode_tdlib_message(message).reactions);
+    auto& source = message.interaction_info_->reactions_;
+    source = api::make_object<api::messageReactions>();
+    auto result = decode_tdlib_message(message);
+    require(result.reactions && result.reactions->items.empty() && !result.reactions->truncated);
+    source->are_tags_ = true;
+    source->reactions_.push_back(reaction(api::make_object<api::reactionTypeEmoji>("❤️"), 2, true));
+    source->reactions_.push_back(reaction(api::make_object<api::reactionTypeCustomEmoji>(INT64_MAX), 3));
+    source->reactions_.push_back(reaction(api::make_object<api::reactionTypeCustomEmoji>(INT64_MIN), 4));
+    source->reactions_.push_back(reaction(api::make_object<api::reactionTypePaid>(), 5));
+    source->reactions_.push_back(reaction(nullptr, 6));
+    result = decode_tdlib_message(message);
+    require(result.reactions && result.reactions->are_tags && !result.reactions->truncated);
+    const auto& items = result.reactions->items;
+    require(items.size() == 5);
+    require(items[0].type == "emoji" && items[0].emoji == "❤️" && items[0].total_count == 2 && items[0].is_chosen);
+    require(items[1].type == "custom_emoji" && items[1].custom_emoji_id == INT64_MAX && !items[1].is_chosen);
+    require(items[2].custom_emoji_id == INT64_MIN && items[2].total_count == 4);
+    require(items[3].type == "paid" && items[3].total_count == 5);
+    require(items[4].type == "unsupported" && items[4].total_count == 6);
+    source->reactions_.push_back(nullptr);
+    require(decode_tdlib_message(message).reactions->truncated);
+    source->reactions_.clear();
+    for (int index = 0; index < 101; ++index) {
+        source->reactions_.push_back(reaction(api::make_object<api::reactionTypeEmoji>(std::string(63, 'x') + "❤️"), 1));
+    }
+    result = decode_tdlib_message(message);
+    require(result.reactions->items.size() == Limits::maximum_reaction_types && result.reactions->truncated);
+    require(result.reactions->items[0].emoji.size() == 63 && valid_utf8(result.reactions->items[0].emoji));
+}
+
 void error_mapping() {
     for (const int code : {400, 403, 404}) {
         api::error error(code, "private-raw-error");
@@ -150,7 +193,7 @@ void response_mapping() {
 }
 
 int main() {
-    try { request_mapping(); message_mapping(); private_chat_mapping(); response_mapping(); error_mapping(); }
+    try { request_mapping(); message_mapping(); private_chat_mapping(); reaction_mapping(); response_mapping(); error_mapping(); }
     catch (const std::exception& error) { std::cerr << error.what() << '\n'; return EXIT_FAILURE; }
     return EXIT_SUCCESS;
 }

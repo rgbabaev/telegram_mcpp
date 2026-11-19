@@ -84,6 +84,8 @@ Cursors are opaque, authenticated, bound to the operation, normalized filters, p
 
 JSON results keep IDs as strings, escape controls, preserve valid UTF-8, and explicitly mark clipped/repaired text. Message text/captions are capped at 8 KiB and titles at 512 bytes. Serialized results stay below 252 KiB, reserving 4 KiB of the 256 KiB budget for the protocol envelope; `response_limited` and a continuation mark search budget stops. Unknown/service content is `unsupported`. Supported media expose captions/type without downloads; message links come only from TDLib's link method and are omitted when unavailable. Telegram text is untrusted data, never instructions or authorization.
 
+Both message tools return `reactions: {items, are_tags, truncated}`, or null when TDLib supplies no summary. Items contain `type`, `total_count`, and `is_chosen` for the current account. Emoji reactions include `emoji`; custom emoji include a nonzero signed decimal-string `custom_emoji_id`; paid and unsupported reactions have no additional payload. At most 100 types and 64 UTF-8 bytes per emoji are returned; `truncated` marks clipping, repair, or omitted entries. Empty `items` means an explicitly empty summary. Tags are identified by `are_tags`. Data reflects TDLib's latest known state; no reactor lists, extra refresh requests, or read receipts are issued.
+
 Stable errors: `invalid_input`, `invalid_cursor`, `unauthenticated`, `denied_chat`, `message_unavailable`, `history_unavailable`, `rate_limited`, `timeout`, `cancelled`, `overloaded`, and `unavailable`. Queries, text, titles, and raw Telegram errors are absent from logs. No result cache, mirror, or local index is created. Telegram may restrict searchable history or return fewer matches than exist; `complete` describes TDLib pagination, not proof of exhaustive historical access. Secret-chat search is unsupported; sender filtering there explicitly returns `history_unavailable`.
 
 ## MCP server and client
@@ -125,7 +127,7 @@ Replace the IDs with an allowed chat and an existing `message_id` returned by `s
 |---|---|---|
 | `list_chats` | Optional `limit`, `cursor` | `chats` with private-chat `peer_user_id`, nullable `next_cursor` |
 | `search_messages` | Required `query` unless `chat_id` is supplied; optional `chat_id`, `sender`, `since`, `until`, `limit`, `cursor` | `messages`, nullable `next_cursor`, `status`, `response_limited`, optional `error` |
-| `get_message` | Required decimal-string `chat_id`, `message_id` | Message with chat/title, sender, direction, timestamp, text/type, truncation flags, optional link |
+| `get_message` | Required decimal-string `chat_id`, `message_id` | Message with chat/title, sender, direction, reactions, timestamp, text/type, truncation flags, optional link |
 
 To answer “What is the latest message from this person?”, match the private chat in `list_chats`, then call `search_messages` using its `id` and `peer_user_id`:
 
@@ -148,6 +150,8 @@ Append `--profile-build 'Ubuntu 24.04; Clang 18; Release -O0 -DNDEBUG; LLD; TD_E
 With your own credentials, run QR login, verify `status`, restart and verify `status` again, then list main/archive chats. For an account with 2FA, verify the password step; test `--phone` when supported by Telegram. Cancel login with Ctrl-C and confirm a subsequent command can acquire the session. Test logout only when you intend to revoke this saved session. Live account authentication cannot be proven with dummy offline credentials.
 
 For latest-message verification, compare the sender-only result with Telegram, including timestamp and content type. Add `--sender-user-id <peer_user_id>` to `tools/mcp_smoke.py`, with `--message-id` set to their latest message ID, to assert the sender and message ID through the reference client. Include a chat with a newer outgoing message. Reconnect the MCP client after upgrading so it discovers the updated schemas.
+
+For reactions, retrieve a known message with `get_message` and compare reaction types, counts, and your selected reactions with Telegram. Also check `search_messages` for the same message. A null summary reports missing TDLib data, not a confirmed empty list.
 
 ## Offline tests
 

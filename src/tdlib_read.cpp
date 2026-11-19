@@ -1,6 +1,7 @@
 #include "telegram_mcpp/tdlib_read.hpp"
 #include "telegram_mcpp/text.hpp"
 
+#include <algorithm>
 #include <charconv>
 #include <string_view>
 
@@ -45,6 +46,41 @@ std::optional<Sender> sender(const api::MessageSender* value) {
         return Sender{SenderType::chat, static_cast<const api::messageSenderChat&>(*value).chat_id_};
     default: return {};
     }
+}
+
+Reaction reaction(const api::messageReaction& value, bool& truncated) {
+    Reaction result;
+    result.total_count = value.total_count_;
+    result.is_chosen = value.is_chosen_;
+    if (!value.type_) return result;
+    switch (value.type_->get_id()) {
+    case api::reactionTypeEmoji::ID:
+        result.type = "emoji";
+        result.emoji = bounded_utf8(static_cast<const api::reactionTypeEmoji&>(*value.type_).emoji_,
+                                    Limits::reaction_emoji_bytes, truncated);
+        break;
+    case api::reactionTypeCustomEmoji::ID:
+        result.type = "custom_emoji";
+        result.custom_emoji_id = static_cast<const api::reactionTypeCustomEmoji&>(*value.type_).custom_emoji_id_;
+        break;
+    case api::reactionTypePaid::ID: result.type = "paid"; break;
+    default: break;
+    }
+    return result;
+}
+
+std::optional<MessageReactions> reactions(const api::messageInteractionInfo* interaction) {
+    if (!interaction || !interaction->reactions_) return {};
+    const auto& source = *interaction->reactions_;
+    MessageReactions result;
+    result.are_tags = source.are_tags_;
+    result.truncated = source.reactions_.size() > Limits::maximum_reaction_types;
+    const auto count = std::min(source.reactions_.size(), Limits::maximum_reaction_types);
+    for (std::size_t index = 0; index < count; ++index) {
+        if (source.reactions_[index]) result.items.push_back(reaction(*source.reactions_[index], result.truncated));
+        else result.truncated = true;
+    }
+    return result;
 }
 
 std::string chat_type(const api::ChatType* type) {
@@ -96,6 +132,7 @@ MessageRecord decode_tdlib_message(const td::td_api::message& message) {
     result.date = message.date_;
     result.sender = sender(message.sender_id_.get());
     result.is_outgoing = message.is_outgoing_;
+    result.reactions = reactions(message.interaction_info_.get());
     if (message.content_) {
         const auto decoded = content(*message.content_);
         result.content_type = decoded.type;

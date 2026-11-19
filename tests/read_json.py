@@ -17,3 +17,6 @@ for message in page["messages"]:
     assert message["chat_title_truncated"] is True
     assert message["text"] == "\x01" * 8192
     assert message["timestamp"] == "2024-01-01T00:00:00Z"
+    assert len(message["reactions"]["items"]) == 100
+    assert message["reactions"]["items"][0]["emoji"] == "\x01" * 64
+    assert message["reactions"]["items"][0]["total_count"] == 2147483647
