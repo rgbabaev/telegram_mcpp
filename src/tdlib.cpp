@@ -1,6 +1,7 @@
 #include "telegram_mcpp/tdlib.hpp"
 #include "telegram_mcpp/private_storage.hpp"
 #include "telegram_mcpp/tdlib_read.hpp"
+#include "telegram_mcpp/tdlib_draft.hpp"
 
 #include <td/telegram/Client.h>
 #include <td/telegram/td_api.h>
@@ -109,6 +110,7 @@ private:
         case AccountCommand::search_messages:
         case AccountCommand::message:
         case AccountCommand::message_link: return make_tdlib_read_function(request);
+        case AccountCommand::set_draft: return make_tdlib_draft_function(request);
         }
         throw AccountError(AccountErrorCode::invalid_input);
     }
@@ -135,6 +137,9 @@ private:
     }
 
     static AccountResult result(const api::Object& object, AccountCommand command) {
+        if (command == AccountCommand::set_draft && object.get_id() != api::error::ID) {
+            return decode_tdlib_draft_result(object);
+        }
         if (object.get_id() != api::error::ID &&
             (command == AccountCommand::search_messages || command == AccountCommand::message ||
              command == AccountCommand::message_link)) return decode_tdlib_read_result(object, command);

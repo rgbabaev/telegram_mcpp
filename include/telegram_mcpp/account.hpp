@@ -23,7 +23,7 @@ namespace telegram_mcpp {
 
 enum class AccountErrorCode { invalid_input, unauthenticated, revoked, rate_limited, timeout,
                               cancelled, overloaded, unavailable, rejected, qr_unavailable, unsupported,
-                              message_unavailable, history_unavailable };
+                              message_unavailable, history_unavailable, draft_unavailable };
 
 class AccountError : public std::runtime_error {
 public:
@@ -45,7 +45,7 @@ struct AuthorizationUpdate {
 };
 
 enum class AccountCommand { parameters, qr, phone, email, email_code, code, password,
-                            logout, close, load_chats, chat_ids, chat, search_messages, message, message_link };
+                            logout, close, load_chats, chat_ids, chat, search_messages, message, message_link, set_draft };
 struct AccountRequest {
     AccountCommand command;
     std::string secret;

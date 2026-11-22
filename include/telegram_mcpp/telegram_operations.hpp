@@ -8,23 +8,23 @@
 
 namespace telegram_mcpp {
 
-enum class ReadErrorCode { invalid_input, invalid_cursor, unauthenticated, denied_chat,
-                           message_unavailable, history_unavailable, rate_limited, timeout,
+enum class OperationErrorCode { invalid_input, invalid_cursor, unauthenticated, denied_chat,
+                           message_unavailable, history_unavailable, draft_unavailable, rate_limited, timeout,
                            cancelled, overloaded, unavailable };
-const char* read_error_name(ReadErrorCode code);
+const char* operation_error_name(OperationErrorCode code);
 
-struct ReadFailure {
-    ReadErrorCode code;
+struct OperationFailure {
+    OperationErrorCode code;
     int retry_after = 0;
 };
 
-class ReadError : public std::runtime_error {
+class OperationError : public std::runtime_error {
 public:
-    explicit ReadError(ReadErrorCode code, int retry_after = 0);
-    ReadErrorCode code() const { return failure_.code; }
+    explicit OperationError(OperationErrorCode code, int retry_after = 0);
+    OperationErrorCode code() const { return failure_.code; }
     int retry_after() const { return failure_.retry_after; }
 private:
-    ReadFailure failure_;
+    OperationFailure failure_;
 };
 
 struct ListChatsInput {
@@ -62,26 +62,33 @@ struct AllowedChatPage {
     std::vector<ChatSummary> chats;
     std::optional<std::string> next_cursor;
 };
+struct DraftResult {
+    std::string chat_id;
+    bool cleared = false;
+};
 enum class SearchStatus { complete, partial, failed };
 struct MessagePage {
     std::vector<Message> messages;
     std::optional<std::string> next_cursor;
     SearchStatus status = SearchStatus::complete;
-    std::optional<ReadFailure> error;
+    std::optional<OperationFailure> error;
     bool response_limited = false;
 };
 
 std::string to_json(const Message& message);
 std::string to_json(const AllowedChatPage& page);
 std::string to_json(const MessagePage& page);
+std::string to_json(const DraftResult& draft);
 
-class ReadOperations {
+class TelegramOperations {
 public:
-    ReadOperations(AccountDispatcher& dispatcher, const Config& config, CursorCodec::Clock clock = {});
+    TelegramOperations(AccountDispatcher& dispatcher, const Config& config, CursorCodec::Clock clock = {});
     AllowedChatPage list_chats(const ListChatsInput& input, const Cancelled& cancelled = {});
     MessagePage search_messages(const SearchMessagesInput& input, const Cancelled& cancelled = {});
     Message get_message(const std::string& chat_id, const std::string& message_id,
                         const Cancelled& cancelled = {});
+    DraftResult set_draft(const std::string& chat_id, const std::string& text,
+                          const Cancelled& cancelled = {});
 private:
     class Operation;
     AccountResult call(AccountRequest request, Operation& operation);

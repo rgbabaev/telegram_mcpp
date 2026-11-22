@@ -14,6 +14,7 @@ AccountErrorCode classify_error(const api::error& error, AccountCommand command)
     if (error.code_ == 429) return AccountErrorCode::rate_limited;
     if (error.code_ == 401) return AccountErrorCode::unauthenticated;
     if (error.code_ == 400 || error.code_ == 403 || error.code_ == 404) {
+        if (command == AccountCommand::set_draft) return AccountErrorCode::draft_unavailable;
         if (command == AccountCommand::message || command == AccountCommand::message_link) return AccountErrorCode::message_unavailable;
         if (command == AccountCommand::search_messages || command == AccountCommand::chat) return AccountErrorCode::history_unavailable;
         if (error.code_ == 400) return AccountErrorCode::rejected;
